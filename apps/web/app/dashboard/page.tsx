@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuth, useUser, UserButton } from "@clerk/nextjs";
+import Link from "next/link";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -56,7 +57,12 @@ export default function DashboardPage() {
           <h1 className="text-xl font-semibold tracking-tight">
             Welcome{user?.firstName ? `, ${user.firstName}` : ""}
           </h1>
-          <UserButton afterSignOutUrl="/sign-in" />
+          <div className="flex items-center gap-4">
+            <Link href="/datasets" className="text-sm text-slate-400 hover:text-slate-200">
+              Datasets →
+            </Link>
+            <UserButton afterSignOutUrl="/sign-in" />
+          </div>
         </div>
 
         <div className="rounded-lg border border-slate-800 bg-slate-900 p-4 text-sm space-y-2">

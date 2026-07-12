@@ -10,7 +10,7 @@ deployable state.
 |---|-------|--------|
 | 1 | Foundation (monorepo, workspace-aware schema, docker dev env) | ✅ Complete |
 | 2 | Authentication (Clerk + workspace RBAC) | ✅ Complete |
-| 3 | Data Ingestion | ⏳ Not started |
+| 3 | Data Ingestion (file upload + DB connectors) | ✅ Complete |
 | 4 | Data Cleaning Engine | ⏳ Not started |
 | 5 | EDA Engine | ⏳ Not started |
 | 6 | Dashboard Builder | ⏳ Not started |
@@ -189,7 +189,68 @@ Webhook testing (`/webhooks/clerk`) requires a public URL — use a tool like
 `ngrok` locally, or skip it for now and rely on the `get_current_user`
 just-in-time creation path, which covers local dev fine.
 
+## What Phase 3 Delivers
+
+- **Dataset / DatasetVersion model** — a Dataset is the logical entity
+  ("Q3 Sales"); each ingestion creates an immutable `DatasetVersion` with
+  its own cached schema snapshot (`schema_json`). This is deliberate
+  version-from-day-one design: Phase 4 (Data Cleaning) writes new versions
+  rather than mutating old ones, and Phase 13 (Version History) has
+  something to show from the start instead of a retrofit.
+- **File upload pipeline** (`POST /workspaces/{id}/datasets/upload`) —
+  accepts CSV/TSV/Excel/JSON, validates size and parseability before
+  committing anything, stores the raw file in object storage (MinIO
+  locally / S3 in prod), and infers a schema with pandas
+  (`app/services/schema_inference.py`).
+- **DB connectors** (`app/services/db_connector.py`) — Postgres and MySQL
+  for now, built generically on SQLAlchemy's inspector so a third
+  SQL-based connector is mostly a driver + one line, not a new module.
+  Connections are read-only by construction (`inspect()` + `SELECT`
+  only — no arbitrary SQL execution path exists here at all) and
+  credentials are Fernet-encrypted at rest (`app/core/crypto.py`).
+- **Schema uniformity** — file uploads and DB-connector snapshots produce
+  the identically-shaped `schema_json`
+  (`[{name, inferred_type, nullable, sample_values}]`), so Phase 5 (EDA)
+  and Phase 6 (Dashboard Builder) can treat both sources the same way.
+- **Dataset preview** (`GET /workspaces/{id}/datasets/{id}/preview`) —
+  re-reads the stored file for a row preview, capped by
+  `DATASET_PREVIEW_ROW_LIMIT`.
+- **Frontend**: a `/datasets` page — workspace picker, drag-in file
+  upload, and a list of datasets with row/column counts and status.
+
+## What Phase 3 Deliberately Does NOT Include
+
+- **Snowflake/BigQuery connectors** — noted in the architecture but not
+  implemented; the `ConnectionType` enum and `db_connector.py`'s
+  driver-map pattern make adding them later straightforward.
+- **Async/background ingestion** — uploads are parsed synchronously in the
+  request. `DatasetVersionStatus` already has PENDING/PROCESSING states
+  ready for when this moves to a Celery job (Phase 10).
+- **Data cleaning or validation beyond "does it parse"** — garbage *rows*
+  (wrong types, nulls, duplicates) are Phase 4's job; this phase only
+  rejects garbage *files* (wrong format, empty, unparseable).
+
+## Testing Phase 3
+
+1. `pip install -r requirements.txt` again (adds boto3, pandas, openpyxl,
+   pymysql) in `apps/api`.
+2. Generate a `DATA_ENCRYPTION_KEY` and add it to `.env`:
+   ```
+   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+   ```
+3. `alembic upgrade head` — adds `data_connections`, `datasets`,
+   `dataset_versions`.
+4. Restart `uvicorn`, sign in via the frontend, create a workspace if you
+   haven't (`POST /organizations` then `POST /workspaces` — see Phase 2's
+   README section), then visit `/datasets` and upload a CSV.
+5. Confirm the dataset appears with the correct row/column count, and that
+   `GET /workspaces/{id}/datasets/{id}` returns the inferred schema.
+6. Optional — DB connector: `POST /workspaces/{id}/connections` with a
+   **read-only** Postgres/MySQL role's credentials, then
+   `GET .../connections/{id}/tables` and
+   `POST .../connections/{id}/datasets` to snapshot a table.
+
 ## Next Phase
 
-**Phase 3: Data Ingestion** — will NOT start until this phase is reviewed,
-pushed, and you explicitly say "start phase 3."
+**Phase 4: Data Cleaning Engine** — will NOT start until this phase is
+reviewed, pushed, and you explicitly say "start phase 4."

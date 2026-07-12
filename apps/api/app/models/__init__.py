@@ -8,6 +8,9 @@ from app.models.organization import Organization
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
+from app.models.data_connection import DataConnection, ConnectionType
+from app.models.dataset import Dataset, DatasetSourceType
+from app.models.dataset_version import DatasetVersion, DatasetVersionStatus
 
 __all__ = [
     "Organization",
@@ -15,4 +18,10 @@ __all__ = [
     "Workspace",
     "WorkspaceMember",
     "WorkspaceRole",
+    "DataConnection",
+    "ConnectionType",
+    "Dataset",
+    "DatasetSourceType",
+    "DatasetVersion",
+    "DatasetVersionStatus",
 ]

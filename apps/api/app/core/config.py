@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     s3_bucket_name: str = "ai-analyst-uploads"
     s3_region: str = "us-east-1"
 
+    # --- Data ingestion (Phase 3) ---
+    data_encryption_key: str = ""  # Fernet key for DataConnection passwords — see app/core/crypto.py
+    max_upload_size_mb: int = 200
+    dataset_preview_row_limit: int = 50
+
     # --- Auth (wired for Phase 2) ---
     auth_provider: str = "clerk"
     clerk_secret_key: str = ""

@@ -8,15 +8,15 @@ Run locally with:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import health
+from app.api import auth, health, organizations, workspaces
 from app.core.config import get_settings
 
 settings = get_settings()
 
 app = FastAPI(
     title="AI Data Analyst SaaS API",
-    version="0.1.0",
-    description="Phase 1: Foundation — workspace-aware backend skeleton.",
+    version="0.2.0",
+    description="Phase 2: Authentication — Clerk-based auth + workspace RBAC.",
 )
 
 # CORS — permissive in dev, tighten in Phase 15 (Security)
@@ -29,6 +29,9 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(auth.router)
+app.include_router(organizations.router)
+app.include_router(workspaces.router)
 
 
 @app.get("/")
@@ -36,5 +39,5 @@ def root() -> dict:
     return {
         "service": settings.app_name,
         "environment": settings.environment,
-        "phase": "1 - foundation",
+        "phase": "2 - authentication",
     }

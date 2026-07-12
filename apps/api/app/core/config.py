@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     auth_provider: str = "clerk"
     clerk_secret_key: str = ""
     clerk_publishable_key: str = ""
+    clerk_jwks_url: str = ""       # e.g. https://<your-domain>.clerk.accounts.dev/.well-known/jwks.json
+    clerk_issuer: str = ""         # e.g. https://<your-domain>.clerk.accounts.dev
     jwt_secret: str = "change_me_locally"
 
     # --- AI provider (wired for Phase 7+) ---

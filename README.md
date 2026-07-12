@@ -9,7 +9,7 @@ deployable state.
 | # | Phase | Status |
 |---|-------|--------|
 | 1 | Foundation (monorepo, workspace-aware schema, docker dev env) | ✅ Complete |
-| 2 | Authentication | ⏳ Not started |
+| 2 | Authentication (Clerk + workspace RBAC) | ✅ Complete |
 | 3 | Data Ingestion | ⏳ Not started |
 | 4 | Data Cleaning Engine | ⏳ Not started |
 | 5 | EDA Engine | ⏳ Not started |
@@ -135,7 +135,61 @@ No auth, no data ingestion, no AI calls — those are Phases 2–3 onward. Phase
 is only the ground every later phase stands on. Keeping it minimal is
 intentional: it makes review and merge trivial.
 
+## What Phase 2 Delivers
+
+- **Clerk integration** for identity — the frontend uses Clerk's prebuilt
+  `<SignIn>`/`<SignUp>` components and `middleware.ts` protects every route
+  except those two by default.
+- **Backend JWT verification** (`app/core/security.py`) — verifies the
+  Clerk session token on every API request against Clerk's JWKS, with no
+  dependency on a specific Clerk SDK version (plain PyJWT + PyJWKClient).
+- **`get_current_user` dependency** (`app/api/deps.py`) — every protected
+  route depends on this; it verifies the token and mirrors the Clerk
+  identity into our local `users` table on first sight.
+- **`require_workspace_role(...)` dependency** — the workspace-scoped RBAC
+  gate every future phase's workspace-owned routes should use. Returns 404
+  (not 403) for non-members, so workspace existence isn't leaked to
+  outsiders; returns 403 when the member's role doesn't meet the minimum.
+- **Clerk webhook handler** (`POST /webhooks/clerk`) — keeps the local
+  `users` table in sync with Clerk (create/update/delete) via
+  svix-verified signatures, so users are mirrored even before their first
+  API call.
+- **Minimal organizations/workspaces routes** — just enough
+  (`POST /organizations`, `POST /workspaces`, `POST /workspaces/{id}/members`)
+  to create real data and prove the RBAC dependency actually blocks/allows
+  correctly. Full workspace management (invites, settings) is Phase 12.
+
+## Testing Phase 2 (Requires a Real Clerk Account)
+
+Unlike Phase 1, this phase can't be fully verified without your own Clerk
+project — JWT verification is deliberately real, not mocked.
+
+1. Create a free account at [clerk.com](https://clerk.com) and a new
+   application.
+2. From the Clerk dashboard, copy into `apps/web/.env.local` (copy from
+   `.env.local.example`):
+   - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+   - `CLERK_SECRET_KEY`
+3. From **API Keys -> Advanced**, copy into your root `.env`:
+   - `CLERK_JWKS_URL`
+   - `CLERK_ISSUER`
+   - `CLERK_SECRET_KEY` (same value as above — used here for webhook
+     signature verification)
+4. `pip install -r requirements.txt` again (adds PyJWT, svix, httpx) and
+   `npm install` in `apps/web` (adds `@clerk/nextjs`).
+5. Start both `uvicorn` and `npm run dev`, then visit
+   `http://localhost:3000` — you should be redirected to `/sign-in`.
+6. Sign up. You should land on `/dashboard`, which calls the API's `/me`
+   and `/workspaces` — confirming the token round-trip works end-to-end.
+7. Optional: run `python tests/test_rbac.py` from `apps/api` to check the
+   role-hierarchy logic in isolation (no Clerk account needed for this
+   part).
+
+Webhook testing (`/webhooks/clerk`) requires a public URL — use a tool like
+`ngrok` locally, or skip it for now and rely on the `get_current_user`
+just-in-time creation path, which covers local dev fine.
+
 ## Next Phase
 
-**Phase 2: Authentication** — will NOT start until this phase is reviewed,
-pushed, and you explicitly say "start phase 2."
+**Phase 3: Data Ingestion** — will NOT start until this phase is reviewed,
+pushed, and you explicitly say "start phase 3."

@@ -8,6 +8,13 @@ operation reads version N and writes version N+1, never mutating N.
 `schema_json` and `row_count`/`column_count` are a cached snapshot of the
 inferred schema at ingestion time, so the UI can render a preview without
 re-reading the underlying file/table on every request.
+
+`parent_version_id` + `transformations_applied` are dataset lineage,
+started in this phase rather than retrofitted later (Phase 4 is the first
+phase that *produces* derived versions, so it's the natural place). Every
+non-root version points at the version it was cleaned from and records
+exactly what operations produced it — enough to reconstruct the full
+raw -> cleaned graph for any dataset without a separate edges table.
 """
 
 import enum
@@ -60,4 +67,19 @@ class DatasetVersion(Base, UUIDPrimaryKeyMixin, TimestampMixin):
 
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # --- Lineage (Phase 4) ---
+    parent_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("dataset_versions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # List of {"op_type": str, "column": str | None, "params": dict,
+    # "rows_affected": int} — the exact operations that turned
+    # parent_version into this version. Null for root (originally ingested)
+    # versions.
+    transformations_applied: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+
     dataset: Mapped["Dataset"] = relationship(back_populates="versions")  # noqa: F821
+    parent_version: Mapped["DatasetVersion | None"] = relationship(
+        remote_side="DatasetVersion.id",
+    )

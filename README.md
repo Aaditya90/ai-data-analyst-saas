@@ -11,8 +11,8 @@ deployable state.
 | 1 | Foundation (monorepo, workspace-aware schema, docker dev env) | ✅ Complete |
 | 2 | Authentication (Clerk + workspace RBAC) | ✅ Complete |
 | 3 | Data Ingestion (file upload + DB connectors) | ✅ Complete |
-| 4 | Data Cleaning Engine | ⏳ Not started |
-| 5 | EDA Engine | ⏳ Not started |
+| 4 | Data Cleaning Engine (issue detection + lineage) | ✅ Complete |
+| 5 | EDA Engine (profiling, correlations, chart suggestions) | ✅ Complete |
 | 6 | Dashboard Builder | ⏳ Not started |
 | 7 | AI Query Engine | ⏳ Not started |
 | 8 | AI Insights | ⏳ Not started |
@@ -250,7 +250,117 @@ just-in-time creation path, which covers local dev fine.
    `GET .../connections/{id}/tables` and
    `POST .../connections/{id}/datasets` to snapshot a table.
 
+## What Phase 4 Delivers
+
+- **Issue detection** (`app/services/data_cleaning.py::detect_issues`) —
+  profiles a dataset version for missing values, fully-duplicate rows,
+  numeric outliers (1.5x IQR), and untrimmed whitespace. Each issue comes
+  with a *suggested* operation — these are rule-based heuristics, not an
+  LLM call. Real AI-driven suggestions (reading column semantics, deciding
+  *why* a value looks wrong) are Phase 8's job; this phase makes sure
+  there's a correct, well-labeled foundation for that to build on.
+- **Human-in-the-loop cleaning** — `POST .../clean` never runs
+  automatically; it requires the exact list of operations the caller wants
+  applied (typically the frontend's pre-checked suggestions, user-editable
+  before submitting). Supported operations: `drop_duplicate_rows`,
+  `drop_null_rows`, `fill_nulls` (mean/median/mode/constant),
+  `remove_outliers` (IQR), `trim_whitespace`, `cast_type`.
+- **Dataset lineage, started here** — cleaning never mutates a version; it
+  creates a new Dataset + DatasetVersion with `parent_version_id` pointing
+  at the source version and `transformations_applied` logging exactly what
+  ran. `GET .../lineage` walks that chain back to the raw upload. Starting
+  this in Phase 4 (the first phase that *derives* data) avoids the costly
+  retrofit a later phase would otherwise need.
+- **Real unit tests** — `apps/api/tests/test_data_cleaning.py` runs
+  standalone (`python tests/test_data_cleaning.py`, no DB/Clerk needed)
+  and actually exercises the cleaning logic, not just import/syntax checks.
+  10 tests, all passing.
+- **Frontend**: a `/datasets/[id]/clean` page — lists detected issues with
+  severity, lets the user uncheck anything, and applies the rest.
+
+## What Phase 4 Deliberately Does NOT Include
+
+- **Cleaning DB-connector datasets** — would mean writing back to a
+  customer's database, which is out of scope and risky for an ingestion
+  tool. Only file-upload datasets can be cleaned in this phase.
+- **Auto-applied cleaning** — every operation requires explicit approval,
+  by design (see `app/api/cleaning.py` module docstring).
+- **Async cleaning jobs** — like Phase 3's uploads, cleaning runs
+  synchronously in the request. Fine for the file sizes this phase
+  targets; moves to Celery in Phase 10 alongside everything else that
+  needs background execution.
+
+## Testing Phase 4
+
+1. No new Python dependencies — this phase only adds code, not packages.
+2. `alembic upgrade head` — adds `parent_version_id` and
+   `transformations_applied` to `dataset_versions`.
+3. Optional but recommended: `cd apps/api && python tests/test_data_cleaning.py`
+   — runs the 10 unit tests with no server/DB needed, confirms the
+   cleaning logic itself is correct before you test through the API.
+4. Restart `uvicorn`, upload a CSV with some messy data (nulls, duplicate
+   rows, an obvious outlier) via `/datasets`, then click "Clean →" on it.
+5. Review the detected issues, apply a few, and confirm a new dataset
+   appears in the list.
+6. Call `GET /workspaces/{id}/datasets/{cleaned_dataset_id}/lineage` and
+   confirm it shows both the raw and cleaned versions in order.
+
+## What Phase 5 Delivers
+
+- **Column profiling** (`app/services/eda.py::compute_column_summaries`) —
+  type-aware stats per column: numeric gets min/max/mean/median/std/
+  quartiles, categorical gets top-10 value counts, datetime gets a range.
+  Every column also reports null count/percentage and unique count.
+- **Correlation analysis** — Pearson correlation across every pair of
+  numeric columns, sorted by strength so the strongest relationships surface
+  first.
+- **Chart suggestions** — rule-based (numeric → histogram, low-cardinality
+  categorical → bar, datetime+numeric → line, categorical+numeric →
+  grouped bar, two numeric → scatter). Same honesty note as Phase 4's
+  cleaning suggestions: this is heuristics from column types, not an LLM
+  reasoning about what the data means — that's Phase 9 (AI Dashboard
+  Generator), which will use this phase's output as one input.
+- **Real caching, not just a TODO** — this is the first phase to actually
+  use Redis (present since Phase 1's docker-compose but unused until now).
+  Cache key is the immutable `version_id`, so there's no invalidation logic
+  to get wrong — a version's profile is valid forever once computed. Pass
+  `?refresh=true` to force recomputation.
+- **9 passing unit tests** (`tests/test_eda.py`) — verified against actual
+  correlated sample data during this build, not just syntax-checked.
+- **Frontend**: a `/datasets/[id]/eda` page — column cards with inline
+  stats and CSS-bar distributions (no charting library added; kept the
+  frontend dependency footprint from Phase 2 unchanged), a correlation
+  list, and the chart suggestions.
+
+## What Phase 5 Deliberately Does NOT Include
+
+- **EDA on DB-connector datasets** — same file-upload-only limitation as
+  Phases 3-4's preview/cleaning endpoints; lifting it is a matter of
+  reading through `db_connector.py` instead of object storage, deferred
+  until a phase actually needs it.
+- **A real charting library** — the frontend renders stats and simple CSS
+  bars rather than pulling in a charting dependency. Phase 6 (Dashboard
+  Builder) is where real interactive charts belong.
+- **Profiling on cleaned/derived versions specifically** — works on any
+  file-upload version regardless of whether it's a root or a Phase 4
+  cleaned version; nothing version-type-specific here.
+
+## Testing Phase 5
+
+1. No new Python dependencies — `redis` has been in requirements.txt since
+   Phase 1, just unused until now.
+2. No new migration — Phase 5 doesn't touch Postgres at all, only Redis.
+3. Confirm Redis is reachable: `docker compose ps` should show
+   `ai-analyst-redis` healthy (it has been since Phase 1).
+4. Optional: `cd apps/api && python tests/test_eda.py` — runs the 9 unit
+   tests standalone.
+5. Restart `uvicorn`, go to `/datasets`, click "EDA →" on any ready
+   file-upload dataset.
+6. Reload the page — response should come back noticeably faster and show
+   `cached: true` in the summary line, confirming Redis caching is working.
+7. Click "Recompute" to confirm the cache-bypass path also works.
+
 ## Next Phase
 
-**Phase 4: Data Cleaning Engine** — will NOT start until this phase is
-reviewed, pushed, and you explicitly say "start phase 4."
+**Phase 6: Dashboard Builder** — will NOT start until this phase is
+reviewed, pushed, and you explicitly say "start phase 6."

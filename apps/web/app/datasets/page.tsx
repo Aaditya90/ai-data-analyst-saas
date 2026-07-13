@@ -164,20 +164,38 @@ export default function DatasetsPage() {
                 <span className="text-slate-500">{d.source_type}</span>
               </div>
               {d.latest_version && (
-                <div className="mt-1 text-slate-400">
-                  {d.latest_version.row_count ?? "?"} rows ·{" "}
-                  {d.latest_version.column_count ?? "?"} columns ·{" "}
-                  <span
-                    className={
-                      d.latest_version.status === "ready"
-                        ? "text-emerald-400"
-                        : d.latest_version.status === "failed"
-                        ? "text-red-400"
-                        : "text-amber-400"
-                    }
-                  >
-                    {d.latest_version.status}
+                <div className="mt-1 flex items-center justify-between text-slate-400">
+                  <span>
+                    {d.latest_version.row_count ?? "?"} rows ·{" "}
+                    {d.latest_version.column_count ?? "?"} columns ·{" "}
+                    <span
+                      className={
+                        d.latest_version.status === "ready"
+                          ? "text-emerald-400"
+                          : d.latest_version.status === "failed"
+                          ? "text-red-400"
+                          : "text-amber-400"
+                      }
+                    >
+                      {d.latest_version.status}
+                    </span>
                   </span>
+                  {d.source_type === "file_upload" && d.latest_version.status === "ready" && (
+                    <span className="flex gap-3">
+                      <Link
+                        href={`/datasets/${d.id}/eda?workspace_id=${selectedWorkspace}&version_id=${d.latest_version.id}`}
+                        className="text-slate-300 hover:text-white underline"
+                      >
+                        EDA →
+                      </Link>
+                      <Link
+                        href={`/datasets/${d.id}/clean?workspace_id=${selectedWorkspace}&version_id=${d.latest_version.id}`}
+                        className="text-slate-300 hover:text-white underline"
+                      >
+                        Clean →
+                      </Link>
+                    </span>
+                  )}
                 </div>
               )}
             </div>

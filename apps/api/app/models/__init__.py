@@ -11,6 +11,8 @@ from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 from app.models.data_connection import DataConnection, ConnectionType
 from app.models.dataset import Dataset, DatasetSourceType
 from app.models.dataset_version import DatasetVersion, DatasetVersionStatus
+from app.models.dashboard import Dashboard
+from app.models.dashboard_widget import DashboardWidget, WidgetType
 
 __all__ = [
     "Organization",
@@ -24,4 +26,7 @@ __all__ = [
     "DatasetSourceType",
     "DatasetVersion",
     "DatasetVersionStatus",
+    "Dashboard",
+    "DashboardWidget",
+    "WidgetType",
 ]

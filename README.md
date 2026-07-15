@@ -13,7 +13,7 @@ deployable state.
 | 3 | Data Ingestion (file upload + DB connectors) | ✅ Complete |
 | 4 | Data Cleaning Engine (issue detection + lineage) | ✅ Complete |
 | 5 | EDA Engine (profiling, correlations, chart suggestions) | ✅ Complete |
-| 6 | Dashboard Builder | ⏳ Not started |
+| 6 | Dashboard Builder (drag-and-drop widgets) | ✅ Complete |
 | 7 | AI Query Engine | ⏳ Not started |
 | 8 | AI Insights | ⏳ Not started |
 | 9 | AI Dashboard Generator | ⏳ Not started |
@@ -360,7 +360,57 @@ just-in-time creation path, which covers local dev fine.
    `cached: true` in the summary line, confirming Redis caching is working.
 7. Click "Recompute" to confirm the cache-bypass path also works.
 
+## What Phase 6 Delivers
+
+- **Dashboard + DashboardWidget models** — a dashboard is a named canvas;
+  each widget stores its grid position (`x/y/w/h`), a `widget_type`
+  (chart/table/kpi/text), and a `config_json` whose shape depends on the
+  type. JSONB config means adding a fifth widget type later doesn't need a
+  migration.
+- **Aggregation service** (`app/services/aggregation.py`) — computes what
+  a widget should render (`compute_kpi`, `compute_table`, `compute_chart`)
+  from a dataset's DataFrame + the widget's config. Kept separate from the
+  API layer, same pattern as Phase 4/5's services, with 9 passing unit
+  tests exercising real grouped aggregations.
+- **Widget data endpoint is separate from widget CRUD** — moving/resizing
+  a widget (frequent, drag-and-drop) only ever touches
+  `dashboard_widgets` rows; `GET .../widgets/{id}/data` is the only path
+  that re-reads the underlying dataset file, and only on load/refresh.
+- **Frontend drag-and-drop canvas** — `react-grid-layout` powers the
+  `/dashboards/{id}` page: drag to move, resize from the corner, position
+  changes persist via `PATCH` on drag/resize stop. An inline "Add Widget"
+  form picks widget type, dataset, and columns (populated from the
+  dataset's schema, fetched via Phase 3's `GET /datasets/{id}`).
+- Widget rendering stays consistent with Phase 5's approach — CSS bars for
+  charts and category distributions, no new charting library added.
+
+## What Phase 6 Deliberately Does NOT Include
+
+- **Widgets backed by DB-connector datasets** — same file-upload-only
+  limitation carried from Phases 3-5's data-reading endpoints.
+- **Dashboard sharing/permissions beyond workspace RBAC** — every
+  workspace member with Viewer+ can see all dashboards in it; per-dashboard
+  sharing is Phase 12 (Team Collaboration) territory.
+- **AI-generated dashboards** — this phase is the manual builder;
+  Phase 9 (AI Dashboard Generator) uses these same
+  Dashboard/DashboardWidget models as its output target, so building this
+  phase's data model correctly now avoids a rewrite there.
+
+## Testing Phase 6
+
+1. No new Python dependencies — this phase only adds code.
+2. `npm install` in `apps/web` again (adds `react-grid-layout`).
+3. `alembic upgrade head` — adds `dashboards` and `dashboard_widgets`.
+4. Optional: `cd apps/api && python tests/test_aggregation.py` — runs the
+   9 unit tests standalone.
+5. Restart `uvicorn` and `npm run dev`, go to `/dashboards`, create one.
+6. Click into it, "+ Add Widget" — try a KPI (pick a numeric column +
+   `sum`), then a Chart (categorical X column, numeric Y column, `avg`).
+7. Confirm you can drag a widget to reposition it and resize it from the
+   bottom-right corner, and that the layout survives a page refresh
+   (positions are persisted via `PATCH`).
+
 ## Next Phase
 
-**Phase 6: Dashboard Builder** — will NOT start until this phase is
-reviewed, pushed, and you explicitly say "start phase 6."
+**Phase 7: AI Query Engine** — will NOT start until this phase is
+reviewed, pushed, and you explicitly say "start phase 7."

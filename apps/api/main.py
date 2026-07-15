@@ -8,15 +8,15 @@ Run locally with:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, cleaning, connections, datasets, eda, health, organizations, workspaces
+from app.api import auth, cleaning, connections, dashboards, datasets, eda, health, organizations, workspaces
 from app.core.config import get_settings
 
 settings = get_settings()
 
 app = FastAPI(
     title="AI Data Analyst SaaS API",
-    version="0.5.0",
-    description="Phase 5: EDA Engine — auto profiling, correlations, chart suggestions.",
+    version="0.6.0",
+    description="Phase 6: Dashboard Builder — drag-and-drop widgets backed by dataset queries.",
 )
 
 # CORS — permissive in dev, tighten in Phase 15 (Security)
@@ -36,6 +36,7 @@ app.include_router(datasets.router)
 app.include_router(connections.router)
 app.include_router(cleaning.router)
 app.include_router(eda.router)
+app.include_router(dashboards.router)
 
 
 @app.get("/")
@@ -43,5 +44,5 @@ def root() -> dict:
     return {
         "service": settings.app_name,
         "environment": settings.environment,
-        "phase": "5 - eda engine",
+        "phase": "6 - dashboard builder",
     }

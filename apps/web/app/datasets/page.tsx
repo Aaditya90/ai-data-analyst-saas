@@ -105,9 +105,14 @@ export default function DatasetsPage() {
       <div className="mx-auto max-w-2xl space-y-6">
         <div className="flex items-center justify-between">
           <h1 className="text-xl font-semibold tracking-tight">Datasets</h1>
-          <Link href="/dashboard" className="text-sm text-slate-400 hover:text-slate-200">
-            ← Dashboard
-          </Link>
+          <div className="flex items-center gap-4">
+            <Link href="/dashboards" className="text-sm text-slate-400 hover:text-slate-200">
+              Dashboards →
+            </Link>
+            <Link href="/dashboard" className="text-sm text-slate-400 hover:text-slate-200">
+              ← Dashboard
+            </Link>
+          </div>
         </div>
 
         {workspaces.length === 0 && !error && (

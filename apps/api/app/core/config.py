@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     # --- AI provider (wired for Phase 7+) ---
     anthropic_api_key: str = ""
     ai_model: str = "claude-sonnet-4-6"
+    ai_query_row_limit: int = 500
 
     # --- Billing (wired for Phase 14) ---
     stripe_secret_key: str = ""

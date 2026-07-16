@@ -8,12 +8,18 @@ workspace data, `require_workspace_role(...)` (are they allowed to do this,
 in this workspace?). Keeping both checks as dependencies — rather than
 scattered manual checks inside route bodies — means they can't accidentally
 be skipped in a new route.
+
+Uses FastAPI's HTTPBearer security scheme (rather than reading the
+Authorization header manually) specifically so /docs renders a global
+"Authorize" padlock — paste the token once there and it's attached to every
+request /docs sends, instead of having to paste it into each endpoint's
+"Try it out" form individually.
 """
 
 import uuid
-from enum import IntEnum
 
-from fastapi import Depends, HTTPException, Header, status
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -21,9 +27,14 @@ from app.core.security import verify_session_token
 from app.models.user import User
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 
+# auto_error=False so a missing token surfaces as our own 401 message below
+# rather than FastAPI's generic "Not authenticated" — same behavior either
+# way, clearer detail message.
+bearer_scheme = HTTPBearer(auto_error=False)
+
 
 def get_current_user(
-    authorization: str | None = Header(default=None),
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     db: Session = Depends(get_db),
 ) -> User:
     """
@@ -31,12 +42,12 @@ def get_current_user(
     creating one on first sight (Clerk is the source of truth for identity;
     our `users` table is a local mirror keyed on auth_provider_id).
     """
-    if not authorization or not authorization.startswith("Bearer "):
+    if credentials is None or not credentials.credentials:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or malformed Authorization header",
         )
-    token = authorization.removeprefix("Bearer ").strip()
+    token = credentials.credentials
     claims = verify_session_token(token)
 
     auth_provider_id = claims["sub"]

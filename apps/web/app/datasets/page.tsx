@@ -188,6 +188,12 @@ export default function DatasetsPage() {
                   {d.source_type === "file_upload" && d.latest_version.status === "ready" && (
                     <span className="flex gap-3">
                       <Link
+                        href={`/datasets/${d.id}/query?workspace_id=${selectedWorkspace}`}
+                        className="text-slate-300 hover:text-white underline"
+                      >
+                        Ask →
+                      </Link>
+                      <Link
                         href={`/datasets/${d.id}/eda?workspace_id=${selectedWorkspace}&version_id=${d.latest_version.id}`}
                         className="text-slate-300 hover:text-white underline"
                       >

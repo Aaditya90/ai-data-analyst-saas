@@ -8,15 +8,15 @@ Run locally with:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, cleaning, connections, dashboards, datasets, eda, health, organizations, workspaces
+from app.api import auth, cleaning, connections, dashboards, datasets, eda, health, organizations, query, workspaces
 from app.core.config import get_settings
 
 settings = get_settings()
 
 app = FastAPI(
     title="AI Data Analyst SaaS API",
-    version="0.6.0",
-    description="Phase 6: Dashboard Builder — drag-and-drop widgets backed by dataset queries.",
+    version="0.7.0",
+    description="Phase 7: AI Query Engine — natural language to safe, sandboxed SQL.",
 )
 
 # CORS — permissive in dev, tighten in Phase 15 (Security)
@@ -37,6 +37,7 @@ app.include_router(connections.router)
 app.include_router(cleaning.router)
 app.include_router(eda.router)
 app.include_router(dashboards.router)
+app.include_router(query.router)
 
 
 @app.get("/")
@@ -44,5 +45,5 @@ def root() -> dict:
     return {
         "service": settings.app_name,
         "environment": settings.environment,
-        "phase": "6 - dashboard builder",
+        "phase": "7 - ai query engine",
     }

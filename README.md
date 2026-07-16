@@ -14,7 +14,7 @@ deployable state.
 | 4 | Data Cleaning Engine (issue detection + lineage) | ✅ Complete |
 | 5 | EDA Engine (profiling, correlations, chart suggestions) | ✅ Complete |
 | 6 | Dashboard Builder (drag-and-drop widgets) | ✅ Complete |
-| 7 | AI Query Engine | ⏳ Not started |
+| 7 | AI Query Engine (NL → safe SQL) | ✅ Complete |
 | 8 | AI Insights | ⏳ Not started |
 | 9 | AI Dashboard Generator | ⏳ Not started |
 | 10 | ML & Forecasting / AutoML | ⏳ Not started |
@@ -410,7 +410,79 @@ just-in-time creation path, which covers local dev fine.
    bottom-right corner, and that the layout survives a page refresh
    (positions are persisted via `PATCH`).
 
+## What Phase 7 Delivers
+
+- **Two developer-experience fixes carried over from Phase 6 testing**,
+  landed at the start of this phase rather than deferred further:
+  - `/docs` now has a real global **"Authorize" padlock** —
+    `get_current_user` switched from reading the `Authorization` header
+    manually to FastAPI's `HTTPBearer` security scheme, which is what
+    makes Swagger UI recognize it and paste the token into every request
+    automatically instead of per-endpoint.
+  - The dashboard page has an inline **"Create workspace"** form —
+    creating an Organization + Workspace no longer requires going to
+    `/docs` and calling two endpoints by hand.
+- **SQL safety guard** (`app/services/sql_guard.py`) — the actual security
+  boundary for AI-generated queries. Rejects anything that isn't a single
+  SELECT/WITH statement, blocks a keyword list (INSERT/UPDATE/DELETE/DROP/
+  ALTER/etc.), rejects statement chaining, and enforces a row limit.
+  Keyword-based rather than a full parser — deliberately, see the module's
+  docstring for why that's an acceptable tradeoff given where queries
+  actually execute (next point).
+- **Sandboxed execution** (`app/services/query_executor.py`) — validated
+  SQL runs against an ephemeral **in-memory SQLite** database holding only
+  that one dataset's rows, created fresh per request and discarded after.
+  Never touches the app's own Postgres or a customer's connected database.
+- **NL → SQL** (`app/services/nl_to_sql.py`) — Claude sees only column
+  names, types, and a few sample values (never the full dataset), and
+  returns `{sql, explanation}` as JSON. The `explanation` is what always
+  gets shown to the user alongside the raw SQL — explainability was a
+  goal from the very first project outline, not an afterthought.
+- **Caching** — same immutable-version pattern as Phase 5: cache key is
+  `(version_id, question)`, so a repeated question costs zero LLM tokens
+  on a cache hit.
+- **11 passing unit tests** covering the guard and executor — the two
+  parts that don't need a live Anthropic API key. `nl_to_sql.py`'s Claude
+  call itself needs manual testing (see below).
+- **Frontend**: a `/datasets/[id]/query` page — ask in plain English, see
+  the generated SQL, the explanation, and a results table.
+
+## What Phase 7 Deliberately Does NOT Include
+
+- **Querying DB-connector datasets** — same file-upload-only limitation
+  carried from every data-reading endpoint since Phase 4. Generating and
+  running arbitrary SQL against a customer's actual connected database is
+  meaningfully riskier and is not in scope here.
+- **Multi-turn conversation / follow-up questions** — each question is
+  independent; conversational context ("now break that down by region")
+  is a natural Phase 8 (AI Insights) extension, not this phase.
+- **A full SQL parser for validation** — see `sql_guard.py`'s docstring;
+  the keyword-blocklist approach is intentional given the sandbox it
+  backs, not a shortcut that needs revisiting immediately.
+
+## Testing Phase 7
+
+1. `pip install -r requirements.txt` again (adds `anthropic`).
+2. Add `ANTHROPIC_API_KEY` to `.env` (get one at console.anthropic.com if
+   you don't have one — this phase genuinely needs a live key, there's no
+   mock mode).
+3. No new migration — this phase doesn't touch Postgres at all.
+4. Optional: `cd apps/api && python tests/test_ai_query.py` — runs the 11
+   unit tests standalone, no API key needed for these.
+5. Restart `uvicorn` and `npm run dev`. On `/docs`, click **"Authorize"**
+   once (top-right) and paste `Bearer <token>` — confirm it now applies to
+   every endpoint without re-entering it.
+6. On `/dashboard`, use the new inline form to create a workspace directly
+   (no more manual `/docs` calls needed for this).
+7. Go to a dataset, click "Ask →", try a question like "what's the average
+   \<numeric column\> by \<categorical column\>?" — confirm you see the
+   generated SQL, a plain-language explanation, and a results table.
+8. Ask the same question again — confirm the response comes back
+   instantly and shows `cached: true`.
+9. Try something like "delete all rows" to confirm the guard blocks it
+   with a 400 rather than the query ever reaching execution.
+
 ## Next Phase
 
-**Phase 7: AI Query Engine** — will NOT start until this phase is
-reviewed, pushed, and you explicitly say "start phase 7."
+**Phase 8: AI Insights** — will NOT start until this phase is reviewed,
+pushed, and you explicitly say "start phase 8."

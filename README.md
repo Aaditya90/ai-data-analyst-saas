@@ -15,7 +15,7 @@ deployable state.
 | 5 | EDA Engine (profiling, correlations, chart suggestions) | ✅ Complete |
 | 6 | Dashboard Builder (drag-and-drop widgets) | ✅ Complete |
 | 7 | AI Query Engine (NL → safe SQL) | ✅ Complete |
-| 8 | AI Insights | ⏳ Not started |
+| 8 | AI Insights (statistical detection + AI narration) | ✅ Complete |
 | 9 | AI Dashboard Generator | ⏳ Not started |
 | 10 | ML & Forecasting / AutoML | ⏳ Not started |
 | 11 | Reports (PDF/PPT) | ⏳ Not started |
@@ -482,7 +482,73 @@ just-in-time creation path, which covers local dev fine.
 9. Try something like "delete all rows" to confirm the guard blocks it
    with a 400 rather than the query ever reaching execution.
 
+## A Bug Fixed From Phase 7
+
+While building this phase's `ai_narration.py` alongside Phase 7's
+`nl_to_sql.py`, a real bug surfaced: `nl_to_sql.py` called
+`anthropic.Anthropic(...)` but never imported the `anthropic` module. It
+went unnoticed in Phase 7 because that code path only runs with a live
+`ANTHROPIC_API_KEY` set, which wasn't exercised yet. Fixed here (now a lazy
+`import anthropic` inside the function, matching this phase's pattern) —
+called out explicitly rather than silently folded in, since "phases build
+on each other" cuts both ways: a latent bug from an earlier phase is worth
+surfacing, not just quietly patching.
+
+## What Phase 8 Delivers
+
+- **Statistics decide, AI only phrases** — `app/services/insights.py`
+  detects and ranks candidate insights (outliers via z-score, correlations
+  via Pearson, categorical imbalance, linear trends over time) using pure
+  pandas math. `app/services/ai_narration.py` then asks Claude to phrase
+  *only the pre-computed numbers* as a sentence — the system prompt
+  explicitly forbids estimating or inventing any number not given to it.
+  This is the same "AI narrates, doesn't decide" split promised back in
+  the original roadmap for this phase.
+- **Graceful AI degradation** — if the Claude call fails (no API key,
+  network issue, bad response), `fallback_narration()` produces a
+  template-based sentence per insight instead of failing the request.
+  Every insight always has *some* readable description; the AI narration
+  layer can go down without the feature going down.
+- **12 passing unit tests** — including one that specifically verifies
+  insights come back sorted by significance, and one exercising every
+  fallback-narration template.
+- **Cached by version_id** — same pattern as Phase 5 (EDA) and Phase 7
+  (query), since DatasetVersions are immutable.
+- **Frontend**: a `/datasets/[id]/insights` page — each insight shown with
+  its type, significance score, and plain-language narration; a visible
+  indicator when narration fell back to templates (so the degradation is
+  honest, not silently hidden from the user).
+
+## What Phase 8 Deliberately Does NOT Include
+
+- **Insights on DB-connector datasets** — same file-upload-only limitation
+  as every data-reading endpoint since Phase 4.
+- **Anomaly detection across dataset versions** ("this changed since last
+  week") — this phase profiles a single version in isolation. Comparing
+  versions over time is a natural Phase 13 (Version History) extension.
+- **User-configurable significance thresholds** — the thresholds in
+  `insights.py` (z-score > 2, |correlation| > 0.5, dominant category >
+  60%, trend r² > 0.3) are fixed constants for now, not per-workspace
+  settings.
+
+## Testing Phase 8
+
+1. No new Python dependencies — `anthropic` has been in requirements.txt
+   since Phase 7.
+2. No new migration — this phase only reads data and writes to Redis
+   cache, same as Phase 5 and 7.
+3. Optional: `cd apps/api && python tests/test_insights.py` — runs the 12
+   unit tests standalone, no API key needed.
+4. Restart `uvicorn`, go to a dataset, click "Insights →".
+5. With `ANTHROPIC_API_KEY` set: confirm each insight has a natural,
+   readable sentence and `ai_narration_used` shows true (no fallback
+   banner).
+6. Without a key (or temporarily blank it in `.env` and restart): confirm
+   insights still appear, with the amber "plain-text descriptions" notice
+   — this is the fallback path working as intended, not a bug.
+7. Click "Recompute" to confirm the cache-bypass path also works.
+
 ## Next Phase
 
-**Phase 8: AI Insights** — will NOT start until this phase is reviewed,
-pushed, and you explicitly say "start phase 8."
+**Phase 9: AI Dashboard Generator** — will NOT start until this phase is
+reviewed, pushed, and you explicitly say "start phase 9."

@@ -194,6 +194,12 @@ export default function DatasetsPage() {
                         Ask →
                       </Link>
                       <Link
+                        href={`/datasets/${d.id}/insights?workspace_id=${selectedWorkspace}&version_id=${d.latest_version.id}`}
+                        className="text-slate-300 hover:text-white underline"
+                      >
+                        Insights →
+                      </Link>
+                      <Link
                         href={`/datasets/${d.id}/eda?workspace_id=${selectedWorkspace}&version_id=${d.latest_version.id}`}
                         className="text-slate-300 hover:text-white underline"
                       >

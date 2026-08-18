@@ -47,6 +47,8 @@ def generate_sql(question: str, schema: list[dict]) -> dict:
             "ANTHROPIC_API_KEY is not set — add it to .env to use the AI Query Engine."
         )
 
+    import anthropic
+
     schema_summary = [
         {
             "column": col["name"],

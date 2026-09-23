@@ -17,7 +17,7 @@ deployable state.
 | 7 | AI Query Engine (NL → safe SQL) | ✅ Complete |
 | 8 | AI Insights (statistical detection + AI narration) | ✅ Complete |
 | 9 | AI Dashboard Generator (one-click, AI-curated) | ✅ Complete |
-| 10 | ML & Forecasting / AutoML | ⏳ Not started |
+| 10 | ML & Forecasting / AutoML | ✅ Complete |
 | 11 | Reports (PDF/PPT) | ⏳ Not started |
 | 12 | Team Collaboration | ⏳ Not started |
 | 13 | Version History | ⏳ Not started |
@@ -70,7 +70,8 @@ ai-data-analyst-saas/
 - **Frontend**: Next.js 14 (App Router), TypeScript, Tailwind
 - **Backend**: FastAPI, SQLAlchemy 2.0, Alembic (migrations), Pydantic v2
 - **Database**: PostgreSQL 16
-- **Cache/Queue backbone**: Redis 7 (wired in now, used from Phase 10 onward)
+- **Cache/Queue backbone**: Redis 7 (in active use since Phase 5, as a
+  response cache for EDA/query/insights — no job queue yet)
 - **Object storage**: MinIO (S3-compatible, for local dev)
 - **Dev orchestration**: Docker Compose
 
@@ -598,7 +599,118 @@ surfacing, not just quietly patching.
    restart) — confirm a dashboard still gets created via the fallback
    path rather than the request failing.
 
+## What Phase 10 Delivers
+
+- **AutoML (`app/services/automl.py`)** — pick any column as a target and
+  the service auto-detects regression vs. classification from its dtype
+  and cardinality (a numeric column with only a handful of distinct
+  values, e.g. 0/1 flags, is treated as classification, not a continuous
+  target). A shared preprocessing pipeline (median-impute + scale numeric,
+  most-frequent-impute + one-hot categorical) feeds two candidate
+  estimators per task (linear/logistic regression and a random forest);
+  both are evaluated on a held-out split and the better one — by R² for
+  regression, macro F1 for classification — is refit on the full dataset
+  and shipped. Near-unique text columns (order IDs, free-text names) are
+  auto-excluded from features as identifier noise.
+- **Feature importance, honestly attributed** — one-hot-expanded columns
+  are summed back to their original column name (via the exact
+  `ColumnTransformer` segment widths, not string-parsing), then normalized
+  to sum to 1, so "which columns mattered" is reported per real column,
+  not per dummy variable.
+- **Forecasting (`app/services/forecasting.py`)** — pick a date column and
+  a numeric value column; the service resamples to daily/weekly/monthly
+  (inferred from the median gap between timestamps, or pinned explicitly),
+  fits a linear trend plus seasonal dummy variables via OLS once there's
+  enough history for two full seasonal cycles, backtests against the tail
+  of the series, then refits on everything and projects `horizon` periods
+  forward with 80%/95% prediction intervals that widen with the square
+  root of the step count.
+- **"AI narrates, code validates" — same split as Phases 7-9** —
+  `automl.py` and `forecasting.py` never call Claude. The only AI touch
+  point is `ai_narration.py`'s new `narrate_model_result()` /
+  `narrate_forecast()`, each handed the exact metrics already computed and
+  asked only to phrase them in plain language; both have a template
+  fallback (`fallback_model_narration()` / `fallback_forecast_narration()`)
+  used automatically when the Claude call fails or no API key is set —
+  same degradation guarantee as insights (Phase 8) and dashboard
+  generation (Phase 9).
+- **Persisted, immutable runs** — `MLModel` and `Forecast` rows are tied to
+  one specific `dataset_version_id` and never mutated in place; a re-run
+  (e.g. against a newer version) creates a new row, mirroring
+  `DatasetVersion`'s own lineage posture. A trained model's serialized
+  `sklearn` `Pipeline` is joblib-dumped into object storage the same way
+  raw files are stored, keyed under
+  `workspaces/{id}/datasets/{id}/models/{model_id}/pipeline.joblib`;
+  everything else (metrics, feature importance, the candidate leaderboard,
+  forecast points) is small enough to live inline as JSONB.
+- **API**:
+  - `POST/GET/DELETE .../versions/{vid}/models[/{model_id}]` — train, list,
+    get (with narration), delete
+  - `POST .../models/{model_id}/predict` — run the stored pipeline on new
+    rows; missing feature keys are imputed the same way training-time nulls
+    were, not rejected
+  - `POST/GET/DELETE .../versions/{vid}/forecasts[/{forecast_id}]` — run,
+    list, get (with narration), delete
+- **30 passing unit tests** (16 AutoML + 14 forecasting) covering task-type
+  detection, feature selection (including identifier exclusion and
+  explicit overrides), training + metrics for both task types, the
+  serialize/deserialize round-trip, frequency inference, seasonality
+  detection, backtest behavior, and input-validation error paths.
+
+## What Phase 10 Deliberately Does NOT Include
+
+- **DB-connector datasets** — same file-upload-only limitation carried
+  from every data-processing phase since Phase 4.
+- **Deep learning / gradient boosting / statsmodels-based models** —
+  candidates are intentionally limited to linear/logistic regression and
+  random forest; this environment doesn't ship `statsmodels`, so
+  forecasting uses a transparent OLS trend+seasonality fit rather than
+  ARIMA/Prophet-style models. Swapping in a heavier candidate set later
+  is additive, not a breaking change to the API shape.
+- **Hyperparameter tuning** — each candidate estimator trains with fixed,
+  reasonable defaults; no grid/random search.
+- **Model retraining/versioning UI, or scheduled/recurring forecasts** — a
+  model or forecast is a one-shot run today; re-running against a newer
+  dataset version is a new POST, not an update.
+- **Background job queue** — training/forecasting both run synchronously
+  within the request (Redis is still unused as a queue, only as EDA/
+  query/insight response cache from earlier phases); large datasets or
+  slow training would block the request in this phase.
+- **Frontend UI for Phase 10** — this phase is API + service-layer only,
+  same as most phases; a "Train Model" / "Forecast" panel in the Next.js
+  app is not part of this delivery.
+
+## Testing Phase 10
+
+1. New Python dependencies — `scikit-learn==1.5.2` and `joblib==1.4.2`
+   added to `apps/api/requirements.txt`. Run `pip install -r
+   requirements.txt` (or rebuild the API container) before starting the
+   server.
+2. New migration — run `alembic upgrade head` to create `ml_models` and
+   `forecasts` (revision `0005`, chained after Phase 6's `0004`).
+3. `cd apps/api && python tests/test_automl.py` — 16 unit tests, pure
+   pandas/sklearn synthetic data, no DB/API key needed.
+4. `cd apps/api && python tests/test_forecasting.py` — 14 unit tests, pure
+   pandas/numpy/sklearn synthetic data, no DB/API key needed.
+5. Manual check, AutoML: `POST
+   /workspaces/{id}/datasets/{did}/versions/{vid}/models` with a
+   `target_column` from a ready file-upload dataset. Confirm the response
+   has `task_type`, a winning `algorithm`, `metrics`, ranked
+   `feature_importance` summing to ~1.0, and a `narration` object.
+6. Manual check, prediction: `POST .../models/{model_id}/predict` with a
+   `rows` array (plain dicts); confirm predictions come back and that
+   omitting a feature key doesn't error (it's imputed).
+7. Manual check, forecasting: `POST
+   /workspaces/{id}/datasets/{did}/versions/{vid}/forecasts` with a
+   `date_column` and `value_column` from a dataset with enough history
+   (8+ periods). Confirm `forecast` has `horizon` points with widening
+   `lower_95`/`upper_95` bounds further out, and `metrics` is populated
+   when there's enough history to backtest.
+8. Without `ANTHROPIC_API_KEY` set (temporarily blank it and restart):
+   confirm both endpoints still return a `narration` (via the template
+   fallback) with `ai_narration_used: false`, rather than failing.
+
 ## Next Phase
 
-**Phase 10: ML & Forecasting / AutoML** — will NOT start until this phase is
-reviewed, pushed, and you explicitly say "start phase 10."
+**Phase 11: Reports (PDF/PPT Generator)** — will NOT start until this
+phase is reviewed, pushed, and you explicitly say "start phase 11."

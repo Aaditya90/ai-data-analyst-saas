@@ -13,6 +13,8 @@ from app.models.dataset import Dataset, DatasetSourceType
 from app.models.dataset_version import DatasetVersion, DatasetVersionStatus
 from app.models.dashboard import Dashboard
 from app.models.dashboard_widget import DashboardWidget, WidgetType
+from app.models.ml_model import MLModel, MLTaskType, MLModelStatus
+from app.models.forecast import Forecast, ForecastFrequency, ForecastStatus
 
 __all__ = [
     "Organization",
@@ -29,4 +31,10 @@ __all__ = [
     "Dashboard",
     "DashboardWidget",
     "WidgetType",
+    "MLModel",
+    "MLTaskType",
+    "MLModelStatus",
+    "Forecast",
+    "ForecastFrequency",
+    "ForecastStatus",
 ]

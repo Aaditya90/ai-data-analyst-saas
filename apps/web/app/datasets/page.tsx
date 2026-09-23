@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -26,10 +27,12 @@ type Dataset = {
 
 export default function DatasetsPage() {
   const { getToken } = useAuth();
+  const router = useRouter();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspace, setSelectedWorkspace] = useState<string>("");
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [generatingFor, setGeneratingFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function authHeaders() {
@@ -97,6 +100,35 @@ export default function DatasetsPage() {
     } finally {
       setUploading(false);
       e.target.value = "";
+    }
+  }
+
+  // Phase 9: one click builds a full dashboard (EDA-derived candidates,
+  // AI-curated subset, auto-arranged layout) and drops the user straight
+  // into Phase 6's editable canvas for it — generated dashboards are
+  // ordinary dashboards afterward, nothing special about them.
+  async function generateDashboard(datasetId: string) {
+    setGeneratingFor(datasetId);
+    setError(null);
+    try {
+      const headers = await authHeaders();
+      const res = await fetch(
+        `${API_URL}/workspaces/${selectedWorkspace}/datasets/${datasetId}/generate-dashboard`,
+        {
+          method: "POST",
+          headers: { ...headers, "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        }
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.detail || `Dashboard generation failed (${res.status})`);
+      }
+      const result = await res.json();
+      router.push(`/dashboards/${result.dashboard_id}?workspace_id=${selectedWorkspace}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Dashboard generation failed");
+      setGeneratingFor(null);
     }
   }
 
@@ -186,7 +218,14 @@ export default function DatasetsPage() {
                     </span>
                   </span>
                   {d.source_type === "file_upload" && d.latest_version.status === "ready" && (
-                    <span className="flex gap-3">
+                    <span className="flex flex-wrap gap-3 justify-end">
+                      <button
+                        onClick={() => generateDashboard(d.id)}
+                        disabled={generatingFor === d.id}
+                        className="text-emerald-400 hover:text-emerald-300 underline disabled:opacity-50"
+                      >
+                        {generatingFor === d.id ? "Generating…" : "✨ Generate Dashboard"}
+                      </button>
                       <Link
                         href={`/datasets/${d.id}/query?workspace_id=${selectedWorkspace}`}
                         className="text-slate-300 hover:text-white underline"

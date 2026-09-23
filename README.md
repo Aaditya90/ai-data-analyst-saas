@@ -16,7 +16,7 @@ deployable state.
 | 6 | Dashboard Builder (drag-and-drop widgets) | ✅ Complete |
 | 7 | AI Query Engine (NL → safe SQL) | ✅ Complete |
 | 8 | AI Insights (statistical detection + AI narration) | ✅ Complete |
-| 9 | AI Dashboard Generator | ⏳ Not started |
+| 9 | AI Dashboard Generator (one-click, AI-curated) | ✅ Complete |
 | 10 | ML & Forecasting / AutoML | ⏳ Not started |
 | 11 | Reports (PDF/PPT) | ⏳ Not started |
 | 12 | Team Collaboration | ⏳ Not started |
@@ -548,7 +548,57 @@ surfacing, not just quietly patching.
    — this is the fallback path working as intended, not a bug.
 7. Click "Recompute" to confirm the cache-bypass path also works.
 
+## What Phase 9 Delivers
+
+- **One-click dashboard generation** — `POST .../generate-dashboard`
+  reuses Phase 5's EDA functions to build a candidate widget list, has
+  Claude pick + title the best 4-6 of them, packs a grid layout
+  deterministically, and saves it using Phase 6's exact
+  Dashboard/DashboardWidget models. A generated dashboard is a normal
+  dashboard afterward — editable, deletable, same as one built by hand.
+- **AI never invents a column reference** — the model only selects
+  indices from a pre-validated candidate list (`build_candidates`); an
+  out-of-range or malformed index from the model is silently skipped
+  rather than trusted, so a hallucinated response degrades the widget
+  count, not the request's correctness.
+- **Graceful fallback** — `select_fallback` picks a sensible default set
+  (2 KPIs, 3 charts, 1 table) with zero AI involvement when the Claude
+  call fails, same degradation pattern as Phase 8.
+- **13 passing unit tests** covering candidate building, fallback
+  selection, layout packing, and — importantly — response validation
+  including a hallucinated out-of-range index.
+- **Frontend**: a "✨ Generate Dashboard" button on each dataset that
+  creates the dashboard and redirects straight into Phase 6's canvas to
+  view/edit it.
+
+## What Phase 9 Deliberately Does NOT Include
+
+- **Generating from DB-connector datasets** — same file-upload-only
+  limitation carried from every data-reading phase since Phase 4.
+- **Grid layout decided by AI** — intentionally deterministic
+  (`pack_layout`), not a prompt — see the service module's docstring.
+- **Regenerating/updating an existing generated dashboard** — each
+  generation creates a new dashboard; refining one currently means editing
+  it by hand in Phase 6's canvas.
+
+## Testing Phase 9
+
+1. No new Python dependencies — `anthropic` has been in requirements.txt
+   since Phase 7.
+2. No new migration — this phase only creates ordinary
+   Dashboard/DashboardWidget rows via Phase 6's existing tables.
+3. Optional: `cd apps/api && python tests/test_dashboard_generator.py` —
+   runs the 13 unit tests standalone, no API key needed.
+4. Restart `uvicorn` and `npm run dev`, go to `/datasets`, click
+   "✨ Generate Dashboard" on any ready file-upload dataset.
+5. Confirm you land on a new dashboard with a handful of widgets already
+   placed and titled, and that dragging/resizing them (Phase 6) still
+   works normally.
+6. Try it without `ANTHROPIC_API_KEY` set (temporarily blank it and
+   restart) — confirm a dashboard still gets created via the fallback
+   path rather than the request failing.
+
 ## Next Phase
 
-**Phase 9: AI Dashboard Generator** — will NOT start until this phase is
-reviewed, pushed, and you explicitly say "start phase 9."
+**Phase 10: ML & Forecasting / AutoML** — will NOT start until this phase is
+reviewed, pushed, and you explicitly say "start phase 10."

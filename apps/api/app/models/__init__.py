@@ -15,6 +15,7 @@ from app.models.dashboard import Dashboard
 from app.models.dashboard_widget import DashboardWidget, WidgetType
 from app.models.ml_model import MLModel, MLTaskType, MLModelStatus
 from app.models.forecast import Forecast, ForecastFrequency, ForecastStatus
+from app.models.report import Report, ReportFormat, ReportStatus
 
 __all__ = [
     "Organization",
@@ -37,4 +38,7 @@ __all__ = [
     "Forecast",
     "ForecastFrequency",
     "ForecastStatus",
+    "Report",
+    "ReportFormat",
+    "ReportStatus",
 ]

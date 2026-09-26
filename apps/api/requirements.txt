@@ -18,3 +18,6 @@ python-multipart==0.0.12
 anthropic==0.39.0
 scikit-learn==1.5.2
 joblib==1.4.2
+reportlab==4.2.5
+python-pptx==1.0.2
+matplotlib==3.9.2

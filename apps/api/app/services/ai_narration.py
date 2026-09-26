@@ -15,6 +15,11 @@ service file, since the exact same contract applies: hand Claude numbers
 that were already computed by automl.py/forecasting.py, ask it only to
 phrase them, and fall back to a template if the call fails or no API key
 is set.
+
+Phase 11 (Reports) adds narrate_report_summary() on the same contract: a
+report's cover-page executive summary is written from the dashboard's
+already-computed KPI/chart values (see app/api/reports.py), never
+estimated by the model.
 """
 
 import json
@@ -293,3 +298,67 @@ def _parse_narration_object(text: str, required_keys: tuple[str, ...]) -> dict:
         raise NarrationError(f"Expected an object with keys {required_keys}, got: {parsed!r}")
 
     return {k: str(parsed[k]) for k in required_keys}
+
+
+_REPORT_SUMMARY_SYSTEM_PROMPT = """You write a short executive summary for the \
+cover page of a business report, for readers who won't read past this page.
+
+Rules:
+- Output ONLY valid JSON: an object with one key "summary" (2-4 sentences).
+- Use ONLY the numbers given to you (dashboard name, KPI values, chart \
+highlights). Never estimate, round differently than given, or invent any \
+number not present in the input.
+- Write in plain, confident business language — no jargon, no hedging \
+filler like "it appears that".
+- If very little data is given (e.g. no KPIs), summarize what the report \
+covers instead of inventing findings.
+"""
+
+
+def narrate_report_summary(report_summary: dict) -> dict:
+    """
+    `report_summary` should contain dashboard_name, kpis (a list of
+    {"title": str, "value": ...}), and chart_highlights (a list of
+    {"title": str, "top_label": str, "top_value": ...}) — see
+    app/api/reports.py for how these are assembled from already-computed
+    widget data. Returns {"summary": str}. Raises NarrationError if the
+    model can't be reached or returns something unusable.
+    """
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if not settings.anthropic_api_key:
+        raise NarrationError("ANTHROPIC_API_KEY is not set")
+
+    import anthropic
+
+    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    response = client.messages.create(
+        model=settings.ai_model,
+        max_tokens=400,
+        system=_REPORT_SUMMARY_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": json.dumps(report_summary, indent=2)}],
+    )
+    text = "".join(block.text for block in response.content if block.type == "text")
+    return _parse_narration_object(text, required_keys=("summary",))
+
+
+def fallback_report_summary(report_summary: dict) -> dict:
+    """Template-based summary used when the AI call fails or is
+    unavailable — a report always ships with a cover summary, degraded but
+    never broken."""
+    dashboard_name = report_summary.get("dashboard_name", "This dashboard")
+    kpis = report_summary.get("kpis") or []
+    chart_highlights = report_summary.get("chart_highlights") or []
+
+    parts = [f"This report covers {dashboard_name}."]
+    if kpis:
+        kpi_phrases = [f"{k['title']} is {k['value']}" for k in kpis[:3]]
+        parts.append(", ".join(kpi_phrases) + ".")
+    if chart_highlights:
+        top = chart_highlights[0]
+        parts.append(f"The highest value in {top['title']} was {top['top_label']} at {top['top_value']}.")
+    if not kpis and not chart_highlights:
+        parts.append("See the sections below for the full detail.")
+
+    return {"summary": " ".join(parts)}

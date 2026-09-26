@@ -18,7 +18,7 @@ deployable state.
 | 8 | AI Insights (statistical detection + AI narration) | ✅ Complete |
 | 9 | AI Dashboard Generator (one-click, AI-curated) | ✅ Complete |
 | 10 | ML & Forecasting / AutoML | ✅ Complete |
-| 11 | Reports (PDF/PPT) | ⏳ Not started |
+| 11 | Reports (PDF/PPT) | ✅ Complete |
 | 12 | Team Collaboration | ⏳ Not started |
 | 13 | Version History | ⏳ Not started |
 | 14 | Billing | ⏳ Not started |
@@ -710,7 +710,115 @@ surfacing, not just quietly patching.
    confirm both endpoints still return a `narration` (via the template
    fallback) with `ai_narration_used: false`, rather than failing.
 
+## What Phase 11 Delivers
+
+- **PDF and PPTX export of any Dashboard** — `POST
+  /workspaces/{id}/dashboards/{did}/reports` walks every widget on a
+  dashboard (chart, table, KPI, text), computes its render data with the
+  *exact same* code Phase 6's "render this widget" endpoint uses
+  (`app/services/aggregation.py`'s `compute_chart`/`compute_table`/
+  `compute_kpi`, against `dataset.versions[0]` as the current version), and
+  lays the results out as a downloadable file. A report always shows what
+  the dashboard would show if opened right now — nothing is re-derived or
+  approximated for the export.
+- **One rendering path for both formats
+  (`app/services/report_generator.py`)** — chart widgets are drawn once
+  with `matplotlib` (Agg backend) to a PNG and embedded as an image in
+  both the PDF and the PPTX, rather than using either library's native
+  chart objects. This avoids the "PowerPoint says the file is corrupt"
+  failure mode that native chart XML can produce, at the cost of the chart
+  not being editable inside PowerPoint — a documented tradeoff, not an
+  oversight.
+- **AI executive summary, same split as every AI feature since Phase 8** —
+  `report_generator.py` never calls Claude. A report's cover-page summary
+  is written by `ai_narration.py`'s new `narrate_report_summary()`, handed
+  a code-only payload (dashboard name, every KPI's exact value, each
+  chart's top category and value) assembled by `app/api/reports.py`, and
+  asked only to phrase those numbers in 2-4 sentences. `fallback_report_summary()`
+  produces a template version from the same payload when the Claude call
+  fails or no API key is set — a report is never generated without some
+  cover summary.
+- **Graceful per-widget degradation** — a widget backed by a DB-connector
+  dataset, a missing dataset, or a bad config is skipped with no entry in
+  the report rather than failing the whole export; `POST` only fails
+  outright if *every* widget was unrenderable (nothing to put in the
+  report at all).
+- **Persisted, immutable reports** — same posture as `MLModel`/`Forecast`:
+  a `Report` row is tied to the dashboard's state at generation time and
+  never mutated; regenerating creates a new row. The file itself is
+  joblib-adjacent in spirit to `MLModel`'s storage pattern — uploaded to
+  object storage at
+  `workspaces/{id}/dashboards/{id}/reports/{report_id}.{pdf|pptx}` — with
+  small metadata (title, format, status, widget count, file size, the
+  cached summary) inline in Postgres.
+- **API**:
+  - `POST/GET/DELETE .../dashboards/{did}/reports[/{report_id}]` —
+    generate, list, get metadata, delete
+  - `GET .../reports/{report_id}/download` — streams the file back with
+    the correct `Content-Type` and `Content-Disposition` for the format
+- **12 passing unit tests** covering PNG chart rendering (including empty
+  data and the line-chart variant), PDF generation with every widget type
+  (verified via `pypdf` — real page content, not just "some bytes came
+  out"), PPTX generation with every widget type (verified via
+  `python-pptx` — real slide count, table dimensions, widescreen slide
+  size), table truncation notes, missing-summary handling, empty-dashboard
+  rejection, and graceful handling of an unsupported widget type.
+
+## What Phase 11 Deliberately Does NOT Include
+
+- **Native, in-app-editable PowerPoint charts** — charts are flattened to
+  images (see above); a viewer can't click a bar and edit its underlying
+  data inside PowerPoint. Swapping in `python-pptx`'s native chart API
+  later is additive, not a breaking change to the report's shape.
+- **Custom report templates / branding upload** — layout, fonts, and the
+  brand color are fixed in code today; no per-workspace template picker.
+- **Scheduled/recurring report generation or email delivery** — a report
+  is a one-shot, on-demand export; no cron-style "send me this every
+  Monday" yet.
+- **DB-connector datasets** — same file-upload-only limitation carried
+  from every data-processing phase since Phase 4; a widget on a
+  DB-connector dataset is silently skipped rather than erroring (see
+  "graceful per-widget degradation" above).
+- **Background job queue** — generation runs synchronously in the
+  request, same as every phase so far; a dashboard with many
+  chart-heavy widgets will hold the request open while `matplotlib`
+  renders each one.
+- **Frontend UI for Phase 11** — API + service-layer only; a "Export as
+  PDF/PPTX" button in the Next.js app is not part of this delivery.
+
+## Testing Phase 11
+
+1. New Python dependencies — `reportlab==4.2.5`, `python-pptx==1.0.2`, and
+   `matplotlib==3.9.2` added to `apps/api/requirements.txt`. Run `pip
+   install -r requirements.txt` (or rebuild the API container) before
+   starting the server.
+2. New migration — run `alembic upgrade head` to create `reports`
+   (revision `0006`, chained after Phase 10's `0005`).
+3. `cd apps/api && python tests/test_report_generator.py` — 12 unit
+   tests, pure synthetic widget data, no DB/API key needed.
+4. Manual check, PDF: `POST
+   /workspaces/{id}/dashboards/{did}/reports` with `{"format": "pdf"}`
+   against a dashboard that has at least one chart, table, KPI, and text
+   widget. Confirm the response has `status: "ready"`, a `summary`, and a
+   nonzero `file_size_bytes`.
+5. Manual check, download: `GET .../reports/{report_id}/download` and
+   confirm the browser/client receives a valid PDF with a cover page
+   (title + executive summary) followed by one section per widget, charts
+   rendered as images.
+6. Manual check, PPTX: repeat with `{"format": "pptx"}`; confirm a title
+   slide, a summary slide, and one slide per widget, with the same 16:9
+   layout in every slide.
+7. Without `ANTHROPIC_API_KEY` set (temporarily blank it and restart):
+   confirm a report still generates successfully with a template
+   `summary` and `ai_narration_used: false` in the response, rather than
+   failing.
+8. Manual check, graceful degradation: point one widget at a
+   DB-connector dataset (or delete its underlying dataset) and regenerate
+   a report; confirm the report still generates successfully with that
+   widget simply absent, and only fails outright if you do this to every
+   widget on the dashboard.
+
 ## Next Phase
 
-**Phase 11: Reports (PDF/PPT Generator)** — will NOT start until this
-phase is reviewed, pushed, and you explicitly say "start phase 11."
+**Phase 12: Team Collaboration** — will NOT start until this phase is
+reviewed, pushed, and you explicitly say "start phase 12."

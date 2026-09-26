@@ -3,6 +3,7 @@ Dashboard Builder API:
   POST   /workspaces/{id}/dashboards                          - create dashboard
   GET    /workspaces/{id}/dashboards                          - list dashboards
   GET    /workspaces/{id}/dashboards/{did}                    - get dashboard + widgets
+  PATCH  /workspaces/{id}/dashboards/{did}                    - rename dashboard
   DELETE /workspaces/{id}/dashboards/{did}                    - delete dashboard
   POST   /workspaces/{id}/dashboards/{did}/widgets            - add widget
   PATCH  /workspaces/{id}/dashboards/{did}/widgets/{wid}      - update widget (position/config)
@@ -14,6 +15,12 @@ widget's dataset — everything else is plain CRUD on the definition. This
 split means moving/resizing widgets (very frequent, drag-and-drop) never
 touches the dataset file, and only /data (rendered on load, or on refresh)
 does the pandas work.
+
+Since Phase 13, every shape-changing action here (create, rename, widget
+add/update/delete) also snapshots the dashboard via
+`app/services/dashboard_versioning.create_version` in the *same*
+transaction as the change — see `app/api/dashboard_versions.py` for the
+history/diff/restore endpoints that read those snapshots back.
 """
 
 import uuid
@@ -22,20 +29,26 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_workspace_role
+from app.api.deps import get_current_user, require_workspace_role
 from app.core.database import get_db
 from app.core.storage import download_to_buffer
 from app.models.dashboard import Dashboard
 from app.models.dashboard_widget import DashboardWidget, WidgetType
 from app.models.dataset import Dataset, DatasetSourceType
+from app.models.user import User
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 from app.services.aggregation import compute_chart, compute_kpi, compute_table
+from app.services.dashboard_versioning import create_version
 from app.services.schema_inference import read_tabular_file
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/dashboards", tags=["dashboards"])
 
 
 class DashboardCreate(BaseModel):
+    name: str
+
+
+class DashboardRename(BaseModel):
     name: str
 
 
@@ -64,10 +77,15 @@ def create_dashboard(
     workspace_id: uuid.UUID,
     body: DashboardCreate,
     member: WorkspaceMember = Depends(require_workspace_role(WorkspaceRole.EDITOR)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     dashboard = Dashboard(workspace_id=workspace_id, name=body.name, created_by_user_id=member.user_id)
     db.add(dashboard)
+    db.flush()
+    create_version(
+        db, dashboard=dashboard, actor_user_id=current_user.id, change_summary="Dashboard created"
+    )
     db.commit()
     db.refresh(dashboard)
     return _serialize_dashboard(dashboard)
@@ -101,6 +119,32 @@ def get_dashboard(
     return result
 
 
+@router.patch("/{dashboard_id}")
+def rename_dashboard(
+    workspace_id: uuid.UUID,
+    dashboard_id: uuid.UUID,
+    body: DashboardRename,
+    member: WorkspaceMember = Depends(require_workspace_role(WorkspaceRole.EDITOR)),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    dashboard = _get_dashboard_or_404(db, workspace_id, dashboard_id)
+    if not body.name.strip():
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Name cannot be empty")
+
+    old_name = dashboard.name
+    dashboard.name = body.name.strip()
+    create_version(
+        db,
+        dashboard=dashboard,
+        actor_user_id=current_user.id,
+        change_summary=f"Renamed from \"{old_name}\" to \"{dashboard.name}\"",
+    )
+    db.commit()
+    db.refresh(dashboard)
+    return _serialize_dashboard(dashboard)
+
+
 @router.delete("/{dashboard_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_dashboard(
     workspace_id: uuid.UUID,
@@ -120,9 +164,10 @@ def create_widget(
     dashboard_id: uuid.UUID,
     body: WidgetCreate,
     member: WorkspaceMember = Depends(require_workspace_role(WorkspaceRole.EDITOR)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _get_dashboard_or_404(db, workspace_id, dashboard_id)
+    dashboard = _get_dashboard_or_404(db, workspace_id, dashboard_id)
 
     if body.widget_type != WidgetType.TEXT and body.dataset_id is not None:
         dataset = (
@@ -145,6 +190,13 @@ def create_widget(
         h=body.h,
     )
     db.add(widget)
+    db.flush()
+    create_version(
+        db,
+        dashboard=dashboard,
+        actor_user_id=current_user.id,
+        change_summary=f"Added widget \"{widget.title}\"",
+    )
     db.commit()
     db.refresh(widget)
     return _serialize_widget(widget)
@@ -157,14 +209,22 @@ def update_widget(
     widget_id: uuid.UUID,
     body: WidgetUpdate,
     member: WorkspaceMember = Depends(require_workspace_role(WorkspaceRole.EDITOR)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> dict:
-    _get_dashboard_or_404(db, workspace_id, dashboard_id)
+    dashboard = _get_dashboard_or_404(db, workspace_id, dashboard_id)
     widget = _get_widget_or_404(db, dashboard_id, widget_id)
 
-    for field, value in body.model_dump(exclude_unset=True).items():
+    changed_fields = body.model_dump(exclude_unset=True)
+    for field, value in changed_fields.items():
         setattr(widget, field, value)
 
+    create_version(
+        db,
+        dashboard=dashboard,
+        actor_user_id=current_user.id,
+        change_summary=f"Updated widget \"{widget.title}\" ({', '.join(changed_fields.keys()) or 'no fields'})",
+    )
     db.commit()
     db.refresh(widget)
     return _serialize_widget(widget)
@@ -176,11 +236,19 @@ def delete_widget(
     dashboard_id: uuid.UUID,
     widget_id: uuid.UUID,
     member: WorkspaceMember = Depends(require_workspace_role(WorkspaceRole.EDITOR)),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _get_dashboard_or_404(db, workspace_id, dashboard_id)
+    dashboard = _get_dashboard_or_404(db, workspace_id, dashboard_id)
     widget = _get_widget_or_404(db, dashboard_id, widget_id)
+    widget_title = widget.title
     db.delete(widget)
+    create_version(
+        db,
+        dashboard=dashboard,
+        actor_user_id=current_user.id,
+        change_summary=f"Removed widget \"{widget_title}\"",
+    )
     db.commit()
     return None
 

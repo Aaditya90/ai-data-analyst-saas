@@ -19,6 +19,7 @@ from app.models.report import Report, ReportFormat, ReportStatus
 from app.models.workspace_invite import WorkspaceInvite, WorkspaceInviteStatus
 from app.models.dashboard_comment import DashboardComment
 from app.models.activity_log import ActivityLog
+from app.models.dashboard_version import DashboardVersion
 
 __all__ = [
     "Organization",
@@ -48,4 +49,5 @@ __all__ = [
     "WorkspaceInviteStatus",
     "DashboardComment",
     "ActivityLog",
+    "DashboardVersion",
 ]

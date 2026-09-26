@@ -15,6 +15,7 @@ from app.api import (
     comments,
     connections,
     dashboard_generator,
+    dashboard_versions,
     dashboards,
     datasets,
     eda,
@@ -34,8 +35,8 @@ settings = get_settings()
 
 app = FastAPI(
     title="AI Data Analyst SaaS API",
-    version="0.12.0",
-    description="Phase 12: Team Collaboration — workspace invites, member management, dashboard comments, and an activity feed.",
+    version="0.13.0",
+    description="Phase 13: Version History — automatic dashboard snapshots, diff, and restore.",
 )
 
 # CORS — permissive in dev, tighten in Phase 15 (Security)
@@ -56,6 +57,7 @@ app.include_router(connections.router)
 app.include_router(cleaning.router)
 app.include_router(eda.router)
 app.include_router(dashboards.router)
+app.include_router(dashboard_versions.router)
 app.include_router(query.router)
 app.include_router(insights.router)
 app.include_router(dashboard_generator.router)
@@ -73,5 +75,5 @@ def root() -> dict:
     return {
         "service": settings.app_name,
         "environment": settings.environment,
-        "phase": "12 - team collaboration (invites, members, comments, activity feed)",
+        "phase": "13 - version history (dashboard snapshots, diff, restore)",
     }

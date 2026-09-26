@@ -20,7 +20,7 @@ deployable state.
 | 10 | ML & Forecasting / AutoML | ✅ Complete |
 | 11 | Reports (PDF/PPT) | ✅ Complete |
 | 12 | Team Collaboration | ✅ Complete |
-| 13 | Version History | ⏳ Not started |
+| 13 | Version History | ✅ Complete |
 | 14 | Billing | ⏳ Not started |
 | 15 | Security | ⏳ Not started |
 | 16 | Observability | ⏳ Not started |
@@ -942,7 +942,127 @@ surfacing, not just quietly patching.
    newest first; try `?action=member.invite_accepted` and `?limit=2` to
    confirm filtering and pagination.
 
+## What Phase 13 Delivers
+
+- **Automatic dashboard version history** (`app/models/dashboard_version.py`,
+  `app/services/dashboard_versioning.py`) — every shape-changing action on
+  a dashboard (create, rename, widget add/update/delete) now also writes
+  an immutable `DashboardVersion` snapshot in the *same* transaction as
+  the change, via `create_version()` (flush-not-commit, same pattern as
+  Phase 12's `log_activity`). Snapshots are never created directly by a
+  client — the history is always complete, not opt-in per edit. This is
+  the one major mutable-in-place resource that didn't already have
+  version history: `DatasetVersion` has had it since Phase 3, and
+  `MLModel`/`Forecast`/`Report` are immutable rows already.
+- **Full widget-list snapshots, not deltas** — `serialize_widgets_for_snapshot()`
+  freezes every widget's type, title, dataset reference, config, and grid
+  position into a plain JSONB list on the version row, independent of the
+  live `DashboardWidget` rows (which can keep changing or be deleted
+  after the snapshot is taken).
+- **Diffing between any two versions** — `diff_widget_snapshots()` (pure,
+  no DB) compares two snapshot lists keyed on each widget's id and reports
+  `added` / `removed` / `modified` (with a per-field before/after) /
+  `unchanged_count`. Exposed as `GET
+  .../versions/{from}/diff/{to}`.
+- **Restore, without destroying history** — `POST
+  .../versions/{n}/restore` (EDITOR+) replaces the live widget set with
+  version `n`'s snapshot and renames the dashboard back to match, then
+  immediately takes a *new* snapshot on top (change_summary "Restored from
+  version n"). Nothing is deleted or rewritten — restoring to version 3
+  when you're on version 8 produces version 9, so the full timeline
+  including the restore itself stays intact, same "never mutate history,
+  append instead" posture as everywhere else immutability shows up in
+  this codebase.
+- **Graceful handling of widgets whose dataset disappeared** — if a
+  snapshot references a `dataset_id` that no longer exists in the
+  workspace by the time of restore, the widget is still restored (title,
+  config, position intact) with the dangling reference dropped rather
+  than failing the whole restore; the response's
+  `skipped_missing_datasets` count says how many.
+- **API**:
+  - `GET .../dashboards/{did}/versions` — list snapshots, newest first
+    (summary: version number, name, widget count, change summary, who,
+    when)
+  - `GET .../versions/{n}` — one snapshot's full widget list
+  - `GET .../versions/{from}/diff/{to}` — added/removed/modified between
+    two snapshots
+  - `POST .../versions/{n}/restore` — restore, returns the new version
+    number and how many widgets were restored/skipped
+  - `PATCH /workspaces/{id}/dashboards/{did}` — new: rename a dashboard
+    (needed a version-worthy mutation to rename into; didn't exist before
+    this phase)
+- **Migration `0008`** — adds `dashboard_versions`, unique on
+  `(dashboard_id, version_number)`.
+- **8 passing unit tests** covering version-number allocation and every
+  diff case (no changes, added, removed, single-field modified,
+  multi-field modified, and the "restore looks like full replace since
+  ids differ" case) — all pure-Python, no DB.
+
+## What Phase 13 Deliberately Does NOT Include
+
+- **Version history for anything other than dashboards** — `Dataset`
+  already had it since Phase 3; comments, invites, activity logs, and
+  workspace membership are not versioned (an activity-log entry already
+  covers "what changed and who did it" for those — see Phase 12).
+- **Named/labeled versions or manual "save as version" snapshots** —
+  every snapshot is automatic and tied to a specific detected action;
+  there's no "tag this as v1.0" or free-form manual checkpoint yet.
+- **Diffing widget *data* (the rendered chart/table/KPI values)** — the
+  diff compares widget *definitions* (config, position, title), not
+  whether the underlying dataset's numbers changed between two points in
+  time. A widget's rendered output can drift even with zero dashboard
+  versions created, since it's computed live against the dataset's
+  current version (Phase 6 behavior, unchanged).
+- **Version pruning/retention limits** — history grows unbounded; no
+  "keep last N versions" or archival policy.
+- **Frontend UI for Phase 13** — API + service-layer only, consistent
+  with Phases 7-12; a visual history timeline / diff viewer in the
+  Next.js app is not part of this delivery.
+
+## Testing Phase 13
+
+1. New migration — run `alembic upgrade head` to create
+   `dashboard_versions` (revision `0008`, chained after Phase 12's
+   `0007`). No new Python dependencies.
+2. `cd apps/api && python tests/test_dashboard_versioning.py` — 8 unit
+   tests, pure Python, no DB/network needed.
+   > Same sandbox limitation noted in Phase 12's testing section applies
+   > here: no outbound network access while building this phase, so the
+   > full dependency set (`fastapi`/`sqlalchemy`/etc.) couldn't be
+   > installed to run this file as-is (it imports `app.services.
+   > dashboard_versioning`, which imports SQLAlchemy transitively through
+   > the model modules). Every file passed `python -m py_compile`, and —
+   > beyond that — the diff/next-version-number logic in this test file
+   > was additionally copy-verified by extracting the two pure functions
+   > into a dependency-free scratch module and actually running all 8
+   > assertions against it (all passed); the delivered test still imports
+   > the real module, as every other phase's tests do, so please run it
+   > for real after `pip install -r requirements.txt`.
+3. Manual check, snapshots are automatic: create a dashboard, add two
+   widgets, edit one, delete the other, then `GET .../versions` — confirm
+   5 versions exist (create, add ×2, update, delete) with sensible
+   `change_summary` text on each, oldest as version 1.
+4. Manual check, snapshot detail: `GET .../versions/1` and confirm
+   `widgets: []` (dashboard had none yet); `GET .../versions/2` and
+   confirm the first widget appears with its title/config/position.
+5. Manual check, diff: `GET .../versions/1/diff/5` and confirm `added`
+   lists whatever widget(s) survived to version 5, `removed` lists the
+   one that was deleted along the way, and `modified` reflects the edit
+   (with a `changes` breakdown per field).
+6. Manual check, restore: `POST .../versions/2/restore`; confirm the
+   dashboard's live widgets now match version 2 (i.e. the widget that was
+   later deleted is back, with a new id), the response's
+   `new_version_number` is 6, and `GET .../versions` now shows 6 entries
+   with version 6's `change_summary` reading "Restored from version 2".
+7. Manual check, dangling dataset on restore: delete the dataset a
+   version-2 widget pointed at, then repeat the restore in step 6; confirm
+   it still succeeds, the widget comes back with `dataset_id: null`, and
+   `skipped_missing_datasets: 1` in the response.
+8. Manual check, rename: `PATCH /workspaces/{id}/dashboards/{did}` with a
+   new `name`; confirm a new version is created with a change_summary like
+   `Renamed from "X" to "Y"`.
+
 ## Next Phase
 
-**Phase 13: Version History** — will NOT start until this phase is
-reviewed, pushed, and you explicitly say "start phase 13."
+**Phase 14: Billing** — will NOT start until this phase is reviewed,
+pushed, and you explicitly say "start phase 14."

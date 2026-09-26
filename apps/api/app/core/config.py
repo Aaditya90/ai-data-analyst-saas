@@ -68,9 +68,16 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     frontend_base_url: str = "http://localhost:3000"
 
-    # --- Billing (wired for Phase 14) ---
+    # --- Billing (Phase 14) ---
+    # Reading plan/usage/limits never needs Stripe — those live on
+    # Organization and are computed from local counts. Only checkout and
+    # the billing portal actually call Stripe, and only if configured;
+    # see app/services/billing.py for why this does NOT degrade silently
+    # the way AI/email do (you can't fake a real payment flow).
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""
+    stripe_price_id_pro: str = ""
+    stripe_price_id_enterprise: str = ""
 
     # --- Observability (wired for Phase 16) ---
     sentry_dsn: str = ""

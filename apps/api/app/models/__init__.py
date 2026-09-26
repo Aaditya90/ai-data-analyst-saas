@@ -20,6 +20,7 @@ from app.models.workspace_invite import WorkspaceInvite, WorkspaceInviteStatus
 from app.models.dashboard_comment import DashboardComment
 from app.models.activity_log import ActivityLog
 from app.models.dashboard_version import DashboardVersion
+from app.models.billing_event import BillingEvent
 
 __all__ = [
     "Organization",
@@ -50,4 +51,5 @@ __all__ = [
     "DashboardComment",
     "ActivityLog",
     "DashboardVersion",
+    "BillingEvent",
 ]

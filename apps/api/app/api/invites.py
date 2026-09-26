@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user, require_workspace_role
 from app.core.database import get_db
 from app.models.user import User
+from app.models.organization import Organization
 from app.models.workspace import Workspace
 from app.models.workspace_invite import (
     INVITE_EXPIRY_DAYS,
@@ -43,6 +44,7 @@ from app.models.workspace_invite import (
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 from app.services.activity import log_activity
 from app.services.email import EmailSendError, send_invite_email
+from app.services.plan_limits import get_plan_limits, is_under_limit, seats_in_use_for_workspace
 
 router = APIRouter(prefix="/workspaces/{workspace_id}/invites", tags=["invites"])
 public_router = APIRouter(prefix="/invites", tags=["invites"])
@@ -122,6 +124,16 @@ def create_invite(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="An invite is already pending for this email",
+        )
+
+    org = db.get(Organization, workspace.organization_id)
+    limits = get_plan_limits(org.plan)
+    current_seats = seats_in_use_for_workspace(db, workspace_id)
+    if not is_under_limit(current_seats, limits["max_seats_per_workspace"]):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"The '{org.plan}' plan allows at most {limits['max_seats_per_workspace']} "
+            f"member(s)/pending invite(s) in this workspace. Upgrade or free up a seat first.",
         )
 
     invite = WorkspaceInvite(

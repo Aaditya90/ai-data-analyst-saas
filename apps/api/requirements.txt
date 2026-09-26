@@ -21,3 +21,4 @@ joblib==1.4.2
 reportlab==4.2.5
 python-pptx==1.0.2
 matplotlib==3.9.2
+stripe==11.1.1

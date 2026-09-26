@@ -20,6 +20,12 @@ from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 from app.services.activity import log_activity
+from app.services.plan_limits import (
+    get_plan_limits,
+    is_under_limit,
+    seats_in_use_for_workspace,
+    workspaces_in_use_for_org,
+)
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -60,6 +66,15 @@ def create_workspace(
     if org is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found"
+        )
+
+    limits = get_plan_limits(org.plan)
+    current_workspace_count = workspaces_in_use_for_org(db, org.id)
+    if not is_under_limit(current_workspace_count, limits["max_workspaces"]):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"The '{org.plan}' plan allows at most {limits['max_workspaces']} "
+            f"workspace(s) per organization. Upgrade to create another.",
         )
 
     workspace = Workspace(name=body.name, slug=body.slug, organization_id=org.id)
@@ -146,6 +161,17 @@ def add_member(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="User is already a member of this workspace",
+        )
+
+    workspace = db.get(Workspace, workspace_id)
+    org = db.get(Organization, workspace.organization_id)
+    limits = get_plan_limits(org.plan)
+    current_seats = seats_in_use_for_workspace(db, workspace_id)
+    if not is_under_limit(current_seats, limits["max_seats_per_workspace"]):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"The '{org.plan}' plan allows at most {limits['max_seats_per_workspace']} "
+            f"member(s)/pending invite(s) in this workspace. Upgrade or free up a seat first.",
         )
 
     new_membership = WorkspaceMember(

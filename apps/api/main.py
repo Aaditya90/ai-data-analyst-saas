@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import (
     activity,
     auth,
+    billing,
     cleaning,
     comments,
     connections,
@@ -35,8 +36,8 @@ settings = get_settings()
 
 app = FastAPI(
     title="AI Data Analyst SaaS API",
-    version="0.13.0",
-    description="Phase 13: Version History — automatic dashboard snapshots, diff, and restore.",
+    version="0.14.0",
+    description="Phase 14: Billing — plans, usage limits, Stripe checkout/portal, and subscription webhooks.",
 )
 
 # CORS — permissive in dev, tighten in Phase 15 (Security)
@@ -68,6 +69,8 @@ app.include_router(invites.router)
 app.include_router(invites.public_router)
 app.include_router(comments.router)
 app.include_router(activity.router)
+app.include_router(billing.router)
+app.include_router(billing.webhook_router)
 
 
 @app.get("/")
@@ -75,5 +78,5 @@ def root() -> dict:
     return {
         "service": settings.app_name,
         "environment": settings.environment,
-        "phase": "13 - version history (dashboard snapshots, diff, restore)",
+        "phase": "14 - billing (plans, usage limits, Stripe checkout/portal, webhooks)",
     }

@@ -21,7 +21,7 @@ deployable state.
 | 11 | Reports (PDF/PPT) | ✅ Complete |
 | 12 | Team Collaboration | ✅ Complete |
 | 13 | Version History | ✅ Complete |
-| 14 | Billing | ⏳ Not started |
+| 14 | Billing | ✅ Complete |
 | 15 | Security | ⏳ Not started |
 | 16 | Observability | ⏳ Not started |
 | 17 | Testing | ⏳ Not started |
@@ -1062,7 +1062,127 @@ surfacing, not just quietly patching.
    new `name`; confirm a new version is created with a change_summary like
    `Renamed from "X" to "Y"`.
 
+## What Phase 14 Delivers
+
+- **Organization is the billing entity, as scaffolded since Phase 1** —
+  `stripe_customer_id` and `plan` already existed on `Organization`; this
+  phase adds `stripe_subscription_id`, `subscription_status`,
+  `current_period_end`, `cancel_at_period_end` (migration `0009`) and
+  makes them mean something. `plan` stays a plain string ("free" | "pro" |
+  "enterprise"), not a DB enum — `app/services/plan_limits.py`'s
+  `PLAN_LIMITS` dict is the single source of truth for what each one
+  allows, same "vocabulary in code, not a migration" reasoning as
+  Phase 12's `ActivityLog.action`.
+- **Plan limits, enforced where usage actually grows**
+  (`app/services/plan_limits.py`) — `max_workspaces` (org-wide) is
+  checked in `create_workspace`; `max_seats_per_workspace` (counts active
+  members *and* still-pending, non-expired invites, so you can't
+  over-invite past the cap) is checked in both `add_member` and
+  `invites.create_invite`. Exceeding either returns `402 Payment
+  Required` with a message naming the current plan and its limit. Free:
+  1 workspace / 3 seats each. Pro: 10 workspaces / 25 seats each.
+  Enterprise: unlimited (`None` in `PLAN_LIMITS`).
+- **Billing does NOT gracefully degrade the way AI/email do — and that's
+  intentional** (`app/services/billing.py`'s module docstring spells out
+  why). Reading plan/usage/limits (`GET .../billing`) never touches
+  Stripe and always works off local data. Checkout and the billing portal
+  *require* `STRIPE_SECRET_KEY`; without it they raise
+  `BillingNotConfiguredError`, surfaced as `503`. There's no fake checkout
+  session — you can't honestly fall back on "the customer paid."
+- **Stripe Checkout + billing portal** — `POST
+  .../billing/checkout-session` (`{"plan": "pro"|"enterprise", ...}`)
+  creates/reuses the org's Stripe customer and returns a Checkout Session
+  URL; `POST .../billing/portal-session` returns a Stripe-hosted portal
+  URL for the org to manage or cancel its own subscription (requires a
+  Stripe customer to already exist).
+- **Webhook keeps `Organization` in sync**
+  (`POST /billing/webhook`, `app/models/billing_event.py`) — signature-
+  verified via the `stripe` SDK's `Webhook.construct_event`, the exact
+  same "verify with the provider's SDK, don't trust the payload outright"
+  pattern as Phase 2's Clerk webhook (svix). Handles
+  `customer.subscription.created/updated` (updates plan from the Price id
+  via `plan_for_price_id`, status, period end, cancel-at-period-end) and
+  `customer.subscription.deleted` (reverts to `free`). Every event is
+  recorded in `BillingEvent` keyed on Stripe's own event id, so a
+  redelivered webhook (Stripe retries on timeout) is detected and skipped
+  rather than double-applied — idempotency, not just an audit log.
+- **Billing access without an organization-membership table** — Phase 12
+  onward this codebase has deliberately had no `OrganizationMember`;
+  access is derived from workspace roles. The new
+  `require_organization_owner()` dependency (`app/api/deps.py`) follows
+  that same design: anyone who is `OWNER` of at least one workspace under
+  the org can view/manage its billing.
+- **7 passing unit tests** covering plan-limit lookup/fallback (including
+  the "unknown plan falls back to the *restrictive* free tier, not
+  unlimited" case), the under-limit check for both finite and unlimited
+  plans, and `plan_for_price_id`'s mapping (including a blank-config
+  collision guard).
+
+## What Phase 14 Deliberately Does NOT Include
+
+- **Usage-based/metered billing** — plans are flat-rate seat/workspace
+  caps, not pay-per-dataset or pay-per-AI-call. Anthropic API usage
+  (Phase 7+) isn't metered back to the org's bill.
+- **Proration, trials, coupons, invoices** — all handled Stripe-side via
+  Checkout/the billing portal; this phase doesn't build custom UI or
+  logic for any of them.
+- **Enforcing `max_seats_per_workspace` retroactively** — if an org is
+  downgraded (or a subscription lapses) while already over a lower plan's
+  seat/workspace count, existing members/workspaces are not auto-removed.
+  The cap only blocks *new* workspaces/invites going forward. Deciding
+  what "over the limit after a downgrade" should do (grace period? hard
+  block on new datasets? something else?) is a product decision left
+  for a later phase, not silently guessed at here.
+- **A dedicated OrganizationMember/organization-level role table** — see
+  "What Phase 14 Delivers" above; billing access is still derived from
+  workspace `OWNER` role, consistent with every phase since Phase 12.
+- **Frontend UI for Phase 14** — API + service-layer only, consistent
+  with Phases 7-13; a pricing/upgrade page, usage dashboard, or embedded
+  Stripe Elements form in the Next.js app is not part of this delivery.
+
+## Testing Phase 14
+
+1. New migration — run `alembic upgrade head` to add the subscription
+   columns to `organizations` and create `billing_events` (revision
+   `0009`, chained after Phase 13's `0008`).
+2. New dependency — `pip install -r requirements.txt` now also installs
+   `stripe==11.1.1`.
+3. `cd apps/api && python tests/test_billing.py` — 7 unit tests, pure
+   Python, no DB/network/Stripe needed.
+   > Same sandbox limitation noted in Phases 12 and 13's testing sections:
+   > no outbound network access while building this phase, so `stripe`/
+   > `fastapi`/`sqlalchemy` couldn't be installed here to run this file
+   > as-is. Every file passed `python -m py_compile`, and the plan-limit
+   > and `plan_for_price_id` logic was additionally copy-verified by
+   > extracting it into a dependency-free scratch module and actually
+   > running all 7 equivalent assertions against it (all passed). Please
+   > run the real suite after `pip install -r requirements.txt`.
+4. Manual check, limits without Stripe configured at all: with
+   `STRIPE_SECRET_KEY` blank, `GET /organizations/{id}/billing` still
+   works (`billing_configured: false`, plan `"free"`, limits/usage
+   populated from local data). Try creating a 2nd workspace under a free
+   org → `402`. Try inviting a 4th person into a workspace already at 3
+   members → `402`.
+5. Manual check, seat cap counts pending invites too: with a workspace at
+   2/3 seats, send one invite (now "3 in use"), confirm a 2nd invite
+   attempt also `402`s even though only 2 are actual members.
+6. Manual check, checkout requires Stripe: with `STRIPE_SECRET_KEY` blank,
+   `POST .../billing/checkout-session` → `503`. Set a real (or Stripe
+   test-mode) secret key and price ids, retry → get back a real
+   `checkout_url`.
+7. Manual check, webhook end-to-end: using the Stripe CLI
+   (`stripe listen --forward-to localhost:8000/billing/webhook`),
+   complete a test-mode checkout and confirm `Organization.plan` flips to
+   `"pro"`/`"enterprise"`, `subscription_status` becomes `"active"`, and a
+   `BillingEvent` row exists for the event. Replay the same event
+   (`stripe events resend <id>`) and confirm it's accepted but not
+   double-applied (no duplicate `BillingEvent`, no re-run side effects).
+8. Manual check, cancellation: cancel the test subscription via the
+   billing portal (`POST .../billing/portal-session`) or the Stripe
+   dashboard; confirm the `customer.subscription.deleted` webhook reverts
+   the org to `plan: "free"`.
+
 ## Next Phase
 
-**Phase 14: Billing** — will NOT start until this phase is reviewed,
-pushed, and you explicitly say "start phase 14."
+**Phase 15: Security** — will NOT start until this phase is reviewed,
+pushed, and you explicitly say "start phase 15."

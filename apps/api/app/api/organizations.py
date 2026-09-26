@@ -60,4 +60,4 @@ def list_my_organizations(
         .distinct()
         .all()
     )
-    return [{"id": str(o.id), "name": o.name, "slug": o.slug} for o in orgs]
+    return [{"id": str(o.id), "name": o.name, "slug": o.slug, "plan": o.plan} for o in orgs]

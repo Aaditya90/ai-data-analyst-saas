@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import verify_session_token
 from app.models.user import User
+from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
 
 # auto_error=False so a missing token surfaces as our own 401 message below
@@ -130,5 +131,42 @@ def require_workspace_role(minimum_role: WorkspaceRole):
                 detail=f"Requires '{minimum_role.value}' role or higher in this workspace",
             )
         return member
+
+
+def require_organization_owner():
+    """
+    Billing (Phase 14) is scoped to Organization, which — per
+    organizations.py's design note — has no membership table of its own;
+    access is derived from workspace membership. This dependency accepts
+    anyone who is OWNER of at least one workspace under the given
+    organization_id, mirroring how create_workspace already makes its
+    creator that workspace's OWNER. A user who's only EDITOR/ADMIN/VIEWER
+    everywhere in the org cannot view or manage billing.
+    """
+
+    def dependency(
+        organization_id: uuid.UUID,
+        current_user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> User:
+        is_owner_somewhere = (
+            db.query(WorkspaceMember)
+            .join(Workspace, Workspace.id == WorkspaceMember.workspace_id)
+            .filter(
+                Workspace.organization_id == organization_id,
+                WorkspaceMember.user_id == current_user.id,
+                WorkspaceMember.role == WorkspaceRole.OWNER,
+            )
+            .first()
+            is not None
+        )
+        if not is_owner_somewhere:
+            # 404, not 403 — same "don't reveal it exists" reasoning as
+            # require_workspace_role.
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Organization not found",
+            )
+        return current_user
 
     return dependency

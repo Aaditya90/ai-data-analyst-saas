@@ -16,6 +16,9 @@ from app.models.dashboard_widget import DashboardWidget, WidgetType
 from app.models.ml_model import MLModel, MLTaskType, MLModelStatus
 from app.models.forecast import Forecast, ForecastFrequency, ForecastStatus
 from app.models.report import Report, ReportFormat, ReportStatus
+from app.models.workspace_invite import WorkspaceInvite, WorkspaceInviteStatus
+from app.models.dashboard_comment import DashboardComment
+from app.models.activity_log import ActivityLog
 
 __all__ = [
     "Organization",
@@ -41,4 +44,8 @@ __all__ = [
     "Report",
     "ReportFormat",
     "ReportStatus",
+    "WorkspaceInvite",
+    "WorkspaceInviteStatus",
+    "DashboardComment",
+    "ActivityLog",
 ]

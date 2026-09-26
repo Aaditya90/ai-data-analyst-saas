@@ -56,6 +56,18 @@ class Settings(BaseSettings):
     ai_model: str = "claude-sonnet-4-6"
     ai_query_row_limit: int = 500
 
+    # --- Team collaboration (Phase 12) ---
+    # SMTP is optional in dev: if smtp_host is unset, invite emails are
+    # logged instead of sent (same graceful-degradation instinct as the
+    # AI fallback paths since Phase 8) rather than failing the invite.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = "no-reply@example.com"
+    smtp_use_tls: bool = True
+    frontend_base_url: str = "http://localhost:3000"
+
     # --- Billing (wired for Phase 14) ---
     stripe_secret_key: str = ""
     stripe_webhook_secret: str = ""

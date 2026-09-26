@@ -1,14 +1,10 @@
 """
-Minimal workspace management needed to exercise the RBAC dependencies added
-in this phase:
-  - creating a workspace (creator becomes its owner)
-  - listing the current user's workspaces
-  - listing / adding members with a role
-
-Fuller workspace features (invites by email to non-existing users, workspace
-settings, deletion) are deliberately out of scope here — this phase is about
-proving the auth + RBAC plumbing works end-to-end, not building the full
-Team Collaboration feature (that's Phase 12).
+Workspace management. Phase 2 established creation, listing, and adding an
+already-registered member; Phase 12 fills in the rest of membership
+lifecycle: changing a member's role, removing a member, and leaving a
+workspace yourself — all guarded so the last OWNER can never be demoted,
+removed, or leave, which would strand the workspace with no one able to
+manage it.
 """
 
 import uuid
@@ -23,6 +19,7 @@ from app.models.organization import Organization
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.models.workspace_member import WorkspaceMember, WorkspaceRole
+from app.services.activity import log_activity
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
@@ -36,6 +33,21 @@ class WorkspaceCreate(BaseModel):
 class MemberAdd(BaseModel):
     email: str
     role: WorkspaceRole = WorkspaceRole.VIEWER
+
+
+class MemberRoleUpdate(BaseModel):
+    role: WorkspaceRole
+
+
+def _owner_count(db: Session, workspace_id: uuid.UUID) -> int:
+    return (
+        db.query(WorkspaceMember)
+        .filter(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.role == WorkspaceRole.OWNER,
+        )
+        .count()
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -143,3 +155,125 @@ def add_member(
     db.commit()
 
     return {"user_id": str(target_user.id), "email": target_user.email, "role": body.role.value}
+
+
+@router.patch("/{workspace_id}/members/{user_id}")
+def update_member_role(
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    body: MemberRoleUpdate,
+    member: WorkspaceMember = Depends(require_workspace_role(WorkspaceRole.ADMIN)),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    target = (
+        db.query(WorkspaceMember)
+        .filter(WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == user_id)
+        .one_or_none()
+    )
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
+
+    # An admin can't promote themselves or anyone else to owner — only an
+    # existing owner can hand off ownership, same reasoning as "you can't
+    # grant a role higher than your own."
+    if body.role == WorkspaceRole.OWNER and member.role != WorkspaceRole.OWNER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only an owner can promote another member to owner",
+        )
+
+    if target.role == WorkspaceRole.OWNER and body.role != WorkspaceRole.OWNER:
+        if _owner_count(db, workspace_id) <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Cannot demote the last owner — promote another member to owner first",
+            )
+
+    from_role = target.role
+    target.role = body.role
+
+    log_activity(
+        db,
+        workspace_id=workspace_id,
+        actor_user_id=current_user.id,
+        action="member.role_changed",
+        target_type="workspace_member",
+        target_id=user_id,
+        metadata={"from_role": from_role.value, "to_role": body.role.value},
+    )
+    db.commit()
+
+    return {"user_id": str(user_id), "role": target.role.value}
+
+
+@router.delete("/{workspace_id}/members/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_member(
+    workspace_id: uuid.UUID,
+    user_id: uuid.UUID,
+    member: WorkspaceMember = Depends(require_workspace_role(WorkspaceRole.ADMIN)),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    target = (
+        db.query(WorkspaceMember)
+        .filter(WorkspaceMember.workspace_id == workspace_id, WorkspaceMember.user_id == user_id)
+        .one_or_none()
+    )
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Member not found")
+
+    if target.role == WorkspaceRole.OWNER and _owner_count(db, workspace_id) <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Cannot remove the last owner — promote another member to owner first",
+        )
+
+    target_email = target.user.email
+    log_activity(
+        db,
+        workspace_id=workspace_id,
+        actor_user_id=current_user.id,
+        action="member.removed",
+        target_type="workspace_member",
+        target_id=user_id,
+        metadata={"email": target_email, "role": target.role.value},
+    )
+    db.delete(target)
+    db.commit()
+
+
+@router.post("/{workspace_id}/leave", status_code=status.HTTP_204_NO_CONTENT)
+def leave_workspace(
+    workspace_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    membership = (
+        db.query(WorkspaceMember)
+        .filter(
+            WorkspaceMember.workspace_id == workspace_id,
+            WorkspaceMember.user_id == current_user.id,
+        )
+        .one_or_none()
+    )
+    if membership is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+
+    if membership.role == WorkspaceRole.OWNER and _owner_count(db, workspace_id) <= 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You're the last owner — promote another member to owner before leaving",
+        )
+
+    log_activity(
+        db,
+        workspace_id=workspace_id,
+        actor_user_id=current_user.id,
+        action="member.left",
+        target_type="workspace_member",
+        target_id=current_user.id,
+        metadata={"email": current_user.email, "role": membership.role.value},
+    )
+    db.delete(membership)
+    db.commit()

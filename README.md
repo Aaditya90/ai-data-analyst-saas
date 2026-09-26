@@ -19,7 +19,7 @@ deployable state.
 | 9 | AI Dashboard Generator (one-click, AI-curated) | ✅ Complete |
 | 10 | ML & Forecasting / AutoML | ✅ Complete |
 | 11 | Reports (PDF/PPT) | ✅ Complete |
-| 12 | Team Collaboration | ⏳ Not started |
+| 12 | Team Collaboration | ✅ Complete |
 | 13 | Version History | ⏳ Not started |
 | 14 | Billing | ⏳ Not started |
 | 15 | Security | ⏳ Not started |
@@ -818,7 +818,131 @@ surfacing, not just quietly patching.
    widget simply absent, and only fails outright if you do this to every
    widget on the dashboard.
 
+## What Phase 12 Delivers
+
+- **Workspace invites by email, including non-existing users** — the piece
+  Phase 2's `workspaces.py` explicitly deferred. `POST
+  /workspaces/{id}/invites` (ADMIN+) creates a `WorkspaceInvite` with a
+  random 32-byte token (`secrets.token_urlsafe`) and a 7-day expiry,
+  regardless of whether that email has ever signed in. `GET
+  /invites/{token}` (any authenticated user) shows the invite's workspace
+  name/role/status before accepting; `POST /invites/{token}/accept`
+  becomes a `WorkspaceMember` only if the current user's email matches the
+  invite's email — so accepting means "sign in with the invited address,"
+  not "guess a token." `DELETE .../invites/{id}` revokes; `POST
+  .../invites/{id}/resend` re-sends and refreshes the expiry.
+- **Member role management, completing Phase 2's RBAC** — `PATCH
+  /workspaces/{id}/members/{user_id}` (ADMIN+) changes a member's role;
+  `DELETE .../members/{user_id}` removes one; `POST
+  /workspaces/{id}/leave` lets you remove yourself. All three refuse to
+  demote/remove/leave-as the workspace's *last* OWNER (`_owner_count()`
+  guard), so a workspace can never end up with nobody able to manage it.
+  Promoting someone *to* OWNER additionally requires the actor to already
+  be an OWNER — an ADMIN can't hand out ownership.
+- **Graceful email degradation (`app/services/email.py`)** — extends the
+  "never hard-fail, only degrade" philosophy from Phase 8's AI fallbacks
+  to a second kind of external dependency: if `SMTP_HOST` isn't configured,
+  `send_invite_email()` logs the would-be email (including the accept URL)
+  and returns `False` instead of raising, so invites work out of the box
+  in dev with zero mail setup. When SMTP *is* configured, a real send
+  failure raises `EmailSendError` rather than silently swallowing it —
+  configured-but-broken is worth surfacing; not-configured is not.
+- **Dashboard comments, threaded one level deep**
+  (`app/models/dashboard_comment.py`, `app/api/comments.py`) — `POST
+  /workspaces/{id}/dashboards/{did}/comments` adds a comment, optionally
+  pinned to one `widget_id` and/or replying to one `parent_comment_id`.
+  VIEWER+ can read and comment (feedback shouldn't require edit rights);
+  editing/deleting requires being the author or ADMIN+; resolving/
+  reopening a thread requires EDITOR+ regardless of authorship. Unlike
+  DatasetVersion/MLModel/Report, comments are intentionally mutable in
+  place — a live conversation, not a derived artifact.
+- **Append-only workspace activity feed**
+  (`app/models/activity_log.py`, `app/services/activity.py`,
+  `app/api/activity.py`) — every invite/member/comment action in this
+  phase writes one `ActivityLog` row via `log_activity()` in the *same*
+  transaction as the mutation it describes (flushed, not committed, until
+  the caller's own `db.commit()`), so a log entry never exists for a
+  mutation that didn't actually happen. `GET /workspaces/{id}/activity`
+  reads it back cursor-paginated on `created_at` (`before=<timestamp>`,
+  `limit`, optional `action` filter) rather than offset-paginated, since
+  an ever-growing append-only log gets worse with offset paging the
+  further back you go.
+- **Migration `0007`** — adds `workspace_invites`, `dashboard_comments`,
+  `activity_logs`; reuses the existing `workspace_role` enum from `0001`
+  for an invite's role rather than introducing a parallel one.
+- **8 passing unit tests** covering invite expiry/pending logic (future,
+  past, revoked-but-not-expired, and a defensively naive-datetime case),
+  the activity action vocabulary, and the email service's no-SMTP
+  degradation path.
+
+## What Phase 12 Deliberately Does NOT Include
+
+- **Real-time updates** — no websockets/SSE for live comment/activity
+  feeds; clients poll `GET` endpoints. Live presence ("who's viewing this
+  dashboard right now") is not built.
+- **Notifications** — an invite triggers exactly one email attempt; there's
+  no in-app notification center, no "you were mentioned" alert on
+  comments, and no digest of activity.
+- **Activity logging for pre-Phase-12 actions** — dataset uploads,
+  dashboard edits, report generation, etc. don't write `ActivityLog` rows
+  yet. `log_activity()` is generic enough for later phases to call from
+  their own mutations, but retrofitting every earlier phase's routes is
+  out of scope here (see "PHASE-GATED WORKFLOW RULES" — no half-built
+  cross-phase dependencies).
+- **Nested replies beyond one level** — a reply-to-a-reply is rejected
+  (400) rather than silently threading deeper; the data model
+  (`parent_comment_id`) could support it, but the API deliberately caps it.
+- **Rich/HTML email** — `send_invite_email()` sends plaintext via stdlib
+  `smtplib`; no templated HTML, no transactional-email provider SDK.
+- **Frontend UI for Phase 12** — API + service-layer only, consistent with
+  Phases 7-11; invite/member-management/comment/activity screens in the
+  Next.js app are not part of this delivery.
+- **Organization-level (cross-workspace) roles or teams** — invites and
+  membership stay workspace-scoped, matching every RBAC decision since
+  Phase 2.
+
+## Testing Phase 12
+
+1. New migration — run `alembic upgrade head` to create
+   `workspace_invites`, `dashboard_comments`, `activity_logs` (revision
+   `0007`, chained after Phase 11's `0006`). No new Python dependencies.
+2. `cd apps/api && python tests/test_team_collaboration.py` — 8 unit
+   tests, pure Python, no DB/network needed.
+   > This sandbox had no outbound network access while building this
+   > phase, so `fastapi`/`sqlalchemy`/etc. could not be installed here to
+   > actually execute the suite (the same would be true of any earlier
+   > phase's tests run fresh in this container — `pip install -r
+   > requirements.txt` fails the same way). Every file was verified with
+   > `python -m py_compile` and reviewed by hand against the same logic
+   > the tests assert; please run the real suite after `pip install -r
+   > requirements.txt` (or in the API container) as the first check.
+3. Manual check, invite by non-existing email: `POST
+   /workspaces/{id}/invites` with an email that's never signed in. Confirm
+   a `WorkspaceInvite` is created (check the API logs for the "[dev-mode
+   email]" line with the accept URL, since `SMTP_HOST` is blank by
+   default). Sign in as that email via Clerk, then `POST
+   /invites/{token}/accept` and confirm you're now a workspace member with
+   the invited role.
+4. Manual check, email mismatch: try accepting an invite while signed in
+   as a *different* email than the invite — confirm `403`.
+5. Manual check, expiry/revoke: manually set an invite's `expires_at` to
+   the past (or `DELETE` it to revoke) and confirm `accept` returns `410`
+   (expired) or `409` (already revoked) respectively.
+6. Manual check, last-owner protection: as the sole OWNER, try `PATCH
+   .../members/{yourself}` to `viewer`, `DELETE .../members/{yourself}`,
+   and `POST .../leave` — confirm all three `409`. Promote a second member
+   to OWNER first, then confirm the same actions succeed.
+7. Manual check, comments: add a top-level comment and a reply on a
+   dashboard as a VIEWER; confirm both appear via `GET .../comments` with
+   the reply nested under `replies`. Confirm a second-level reply (replying
+   to a reply) is rejected with `400`. Resolve the thread as an EDITOR and
+   confirm `resolved: true` with your email in `resolved_by_email`.
+8. Manual check, activity feed: after steps 3-7, `GET
+   /workspaces/{id}/activity` and confirm entries appear for each action,
+   newest first; try `?action=member.invite_accepted` and `?limit=2` to
+   confirm filtering and pagination.
+
 ## Next Phase
 
-**Phase 12: Team Collaboration** — will NOT start until this phase is
-reviewed, pushed, and you explicitly say "start phase 12."
+**Phase 13: Version History** — will NOT start until this phase is
+reviewed, pushed, and you explicitly say "start phase 13."

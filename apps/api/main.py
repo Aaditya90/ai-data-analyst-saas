@@ -8,15 +8,34 @@ Run locally with:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import auth, cleaning, connections, dashboard_generator, dashboards, datasets, eda, forecasts, health, insights, ml_models, organizations, query, reports, workspaces
+from app.api import (
+    activity,
+    auth,
+    cleaning,
+    comments,
+    connections,
+    dashboard_generator,
+    dashboards,
+    datasets,
+    eda,
+    forecasts,
+    health,
+    insights,
+    invites,
+    ml_models,
+    organizations,
+    query,
+    reports,
+    workspaces,
+)
 from app.core.config import get_settings
 
 settings = get_settings()
 
 app = FastAPI(
     title="AI Data Analyst SaaS API",
-    version="0.11.0",
-    description="Phase 11: Reports (PDF/PPT Generator) — exportable PDF and PowerPoint reports from dashboards.",
+    version="0.12.0",
+    description="Phase 12: Team Collaboration — workspace invites, member management, dashboard comments, and an activity feed.",
 )
 
 # CORS — permissive in dev, tighten in Phase 15 (Security)
@@ -43,6 +62,10 @@ app.include_router(dashboard_generator.router)
 app.include_router(ml_models.router)
 app.include_router(forecasts.router)
 app.include_router(reports.router)
+app.include_router(invites.router)
+app.include_router(invites.public_router)
+app.include_router(comments.router)
+app.include_router(activity.router)
 
 
 @app.get("/")
@@ -50,5 +73,5 @@ def root() -> dict:
     return {
         "service": settings.app_name,
         "environment": settings.environment,
-        "phase": "11 - reports (pdf/ppt generator)",
+        "phase": "12 - team collaboration (invites, members, comments, activity feed)",
     }

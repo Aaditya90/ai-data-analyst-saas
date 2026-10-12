@@ -1,0 +1,151 @@
+# Phase 18: single-host production stack.
+#   cp .env.production.example .env.production   # fill in every value
+#   docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+# Only Caddy publishes ports (80/443). Postgres, Redis, MinIO, the API and
+# the web app live on the internal network and are unreachable from outside.
+# For a managed Postgres/Redis/S3 instead, delete those services and point
+# the URLs in .env.production at them.
+
+x-api-env: &api-env
+  ENVIRONMENT: production
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  DATABASE_URL: postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  APP_DB_URL: postgresql+psycopg://app_runtime:${APP_RUNTIME_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD}
+  REDIS_URL: redis://redis:6379/0
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY}
+  S3_BUCKET_NAME: ${S3_BUCKET_NAME:-ai-analyst-uploads}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-}
+  JWT_SECRET: ${JWT_SECRET}
+  CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+  CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:-}
+  CLERK_JWKS_URL: ${CLERK_JWKS_URL}
+  CLERK_ISSUER: ${CLERK_ISSUER}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  AI_MODEL: ${AI_MODEL:-claude-sonnet-4-6}
+  FRONTEND_BASE_URL: https://${WEB_DOMAIN}
+  CORS_ALLOWED_ORIGINS: https://${WEB_DOMAIN}
+  SMTP_HOST: ${SMTP_HOST:-}
+  SMTP_PORT: ${SMTP_PORT:-587}
+  SMTP_USERNAME: ${SMTP_USERNAME:-}
+  SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+  SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-no-reply@example.com}
+  STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+  STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+  STRIPE_PRICE_ID_PRO: ${STRIPE_PRICE_ID_PRO:-}
+  STRIPE_PRICE_ID_ENTERPRISE: ${STRIPE_PRICE_ID_ENTERPRISE:-}
+  SENTRY_DSN: ${SENTRY_DSN:-}
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:?set S3_SECRET_KEY}
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: alembic upgrade head, then set the app_runtime password so
+  # Row-Level Security is actually enforced against the API's connection.
+  migrate:
+    build:
+      context: ./apps/api
+      dockerfile: ../../infra/docker/api.Dockerfile
+    image: ${API_IMAGE:-ai-analyst-api}:${IMAGE_TAG:-latest}
+    restart: "no"
+    command: ["sh", "scripts/entrypoint_migrate.sh"]
+    environment:
+      <<: *api-env
+      APP_RUNTIME_PASSWORD: ${APP_RUNTIME_PASSWORD:?set APP_RUNTIME_PASSWORD}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    image: ${API_IMAGE:-ai-analyst-api}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment: *api-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: ../../infra/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://${API_DOMAIN:?set API_DOMAIN}
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${CLERK_PUBLISHABLE_KEY:?set CLERK_PUBLISHABLE_KEY}
+    image: ${WEB_IMAGE:-ai-analyst-web}:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      CLERK_SECRET_KEY: ${CLERK_SECRET_KEY:-}
+    depends_on:
+      - api
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      WEB_DOMAIN: ${WEB_DOMAIN:?set WEB_DOMAIN}
+      API_DOMAIN: ${API_DOMAIN:?set API_DOMAIN}
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  caddy_data:
+  caddy_config:

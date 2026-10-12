@@ -1,0 +1,16 @@
+# Phase 18: TLS termination + routing. Caddy obtains and renews Let's Encrypt
+# certificates automatically for the two domains below (DNS for both must
+# already point at this host, and ports 80/443 must be reachable).
+{$WEB_DOMAIN} {
+	encode gzip
+	reverse_proxy web:3000
+}
+
+{$API_DOMAIN} {
+	encode gzip
+	# MAX_UPLOAD_SIZE_MB is 200 by default; leave headroom for multipart overhead.
+	request_body {
+		max_size 250MB
+	}
+	reverse_proxy api:8000
+}

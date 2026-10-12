@@ -1,0 +1,4 @@
+.env
+.env.production
+infra/docker/pgdata/
+infra/docker/minio-data/

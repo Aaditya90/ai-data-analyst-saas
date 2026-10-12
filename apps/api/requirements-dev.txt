@@ -1,0 +1,9 @@
+# Phase 17 (Testing) — installed on top of requirements.txt for running
+# the test suite locally and in CI. Never installed in the production
+# image (see infra/docker/api.Dockerfile, which only copies
+# requirements.txt).
+-r requirements.txt
+
+pytest==8.3.3
+pytest-cov==5.0.0
+faker==30.3.0
